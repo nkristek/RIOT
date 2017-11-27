@@ -200,6 +200,7 @@ int _ccnl_interest(int argc, char **argv)
     if (argc > 2) {
         if (_intern_fib_add(argv[1], argv[2]) < 0) {
             _interest_usage(argv[0]);
+            puts("_ccnl_interest couldn't send interest");
             return -1;
         }
     }
@@ -207,7 +208,7 @@ int _ccnl_interest(int argc, char **argv)
     memset(_int_buf, '\0', BUF_SIZE);
 
     struct ccnl_prefix_s *prefix = ccnl_URItoPrefix(argv[1], CCNL_SUITE_NDNTLV, NULL, 0);
-    int res = ccnl_send_interest(prefix, _int_buf, BUF_SIZE, NULL);
+    int res = ccnl_send_interest(prefix, _int_buf, BUF_SIZE, NULL, NULL);
     ccnl_prefix_free(prefix);
 
     return res;

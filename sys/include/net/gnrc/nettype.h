@@ -113,6 +113,7 @@ typedef enum {
     GNRC_NETTYPE_CCN,           /**< Protocol is CCN */
     GNRC_NETTYPE_CCN_CHUNK,     /**< Protocol is CCN, packet contains a content
                                      chunk */
+    GNRC_NETTYPE_CCN_HOPP,      /**< Protocol is HOPP */
 #endif
 
     /**

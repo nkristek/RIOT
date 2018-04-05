@@ -52,7 +52,9 @@ static char pktcnt_stack[PKTCNT_STACKSIZE];
 static kernel_pid_t pktcnt_pid = KERNEL_PID_UNDEF;
 static msg_t pktcnt_msg_queue[PKTCNT_MSG_QUEUE_SIZE];
 static pktcnt_ctx_t ctx;
+#ifdef MODULE_GNRC_IPV6
 static char src[IPV6_ADDR_MAX_STR_LEN], dst[IPV6_ADDR_MAX_STR_LEN];
+#endif
 
 const char *keyword = "PKT";
 const char *typestr[] = { "TIMER", "STARTUP", "PKT_TX", "PKT_RX", };
@@ -160,10 +162,62 @@ static void log_l2_tx(gnrc_pktsnip_t *pkt)
 }
 
 #ifdef MODULE_CCN_LITE
+
+static void log_name(uint8_t *payload, unsigned len)
+{
+    unsigned i = 0;
+    while (i < len) {
+        if (payload[i] == 0x08) {
+            unsigned complen = payload[i+1];
+            printf("/%.*s", complen, (char *)&payload[i+2]);
+            i += complen + 2;
+        }
+        else {
+            /* this should not happen, actually */
+            break;
+        }
+    }
+    return;
+}
+
 static void log_ndn(uint8_t *payload)
 {
-    printf("NDN %02x\n", payload[0]);
+    /* print type */
+    printf("NDN %02x ", payload[0]);
+
+    unsigned pkttype = payload[0];
+    (void) pkttype;
+    unsigned pktlen = payload[1];
+    unsigned i = 2;
+
+    while (i < pktlen) {
+        unsigned tlvtype = payload[i];
+        unsigned tlvlen = payload[i+1];
+
+        /* Name TLV */
+        if (tlvtype == 0x7) {
+            log_name(payload + i + 2, tlvlen);
+            i += tlvlen + 2;
+            break;
+        }
+        /* Nonce TLV */
+        /*
+        else if ((pkttype == 0x5) && (payload[i] == 0x0a)) {
+            printf("-0x%02x%02x%02x%02x", payload[i+2],
+                                          payload[i+3],
+                                          payload[i+4],
+                                          payload[i+5]);
+            i += 4 + 2;
+        }
+        */
+        else{
+            i++;
+        }
+    }
+
+    printf("\n");
 }
+
 #endif
 
 #ifdef MODULE_GNRC_IPV6
@@ -564,7 +618,7 @@ void pktcnt_log_rx(gnrc_pktsnip_t *pkt)
 #elif defined(MODULE_CCN_LITE)
     if ((pkt->type == GNRC_NETTYPE_CCN) || (pkt->type == GNRC_NETTYPE_CCN_CHUNK)) {
         uint8_t *payload = pkt->data;
-
+        /* 0x5: Interest, 0x6: data*/
         if ((payload[0] == 0x5) || payload[0] == 0x6) {
             log_l2_rx(pkt);
             log_ndn(payload);

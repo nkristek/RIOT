@@ -48,6 +48,7 @@ USEMODULE += evtimer
 USEMODULE += netstats_l2
 #USEMODULE += l2filter_blacklist
 USEMODULE += hopp
+USEMODULE += pktcnt
 
 USEPKG += tlsf
 USEPKG += ccn-lite

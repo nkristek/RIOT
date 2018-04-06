@@ -20,6 +20,8 @@
 
 #include "net/hopp/hopp.h"
 
+#include "pktcnt.h"
+
 #define MAIN_QSZ (4)
 static msg_t _main_q[MAIN_QSZ];
 
@@ -104,6 +106,12 @@ int main(void)
     gnrc_netapi_get(hopp_netif->pid, NETOPT_ADDRESS_LONG, 0, hwaddr, sizeof(hwaddr));
 #endif
     gnrc_netif_addr_to_str(hwaddr, sizeof(hwaddr), hwaddr_str);
+
+    /* init pktcnt */
+    if (pktcnt_init() != PKTCNT_OK) {
+        puts("error: unable to initialize pktcnt");
+        return 1;
+    }
 
     hopp_pid = thread_create(hopp_stack, sizeof(hopp_stack), THREAD_PRIORITY_MAIN - 1,
                              THREAD_CREATE_STACKTEST, hopp, &ccnl_relay,

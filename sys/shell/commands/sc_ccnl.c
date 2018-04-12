@@ -24,7 +24,7 @@
 #include "ccn-lite-riot.h"
 #include "ccnl-pkt-ndntlv.h"
 
-#define BUF_SIZE (64)
+#define BUF_SIZE (100)
 
 #define MAX_ADDR_LEN            (GNRC_NETIF_L2ADDR_MAXLEN)
 

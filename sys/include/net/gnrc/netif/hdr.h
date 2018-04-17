@@ -87,6 +87,7 @@ typedef struct {
     uint8_t flags;              /**< flags as defined above */
     int16_t rssi;               /**< rssi of received packet in dBm (optional) */
     uint8_t lqi;                /**< lqi of received packet (optional) */
+    uint8_t seq;                /**< 802.15.4 sequence number for measurement purpose */
 } gnrc_netif_hdr_t;
 
 /**
@@ -105,6 +106,7 @@ static inline void gnrc_netif_hdr_init(gnrc_netif_hdr_t *hdr, uint8_t src_l2addr
     hdr->rssi = 0;
     hdr->lqi = 0;
     hdr->flags = 0;
+    hdr->seq = 0;
 }
 
 /**

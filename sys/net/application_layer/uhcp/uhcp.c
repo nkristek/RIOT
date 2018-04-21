@@ -18,17 +18,18 @@ void uhcp_handle_udp(uint8_t *buf, size_t len, uint8_t *src, uint16_t port, uhcp
 {
     char addr_str[INET6_ADDRSTRLEN];
     inet_ntop(AF_INET6, src, addr_str, INET6_ADDRSTRLEN);
-    printf("got packet from %s port %u\n", addr_str, (unsigned)port);
+    (void)port;
+    /* printf("got packet from %s port %u\n", addr_str, (unsigned)port); */
 
     if (len < sizeof(uhcp_req_t)) {
-        puts("error: packet too small.");
+        /* puts("error: packet too small."); */
         return;
     }
 
     uhcp_hdr_t *hdr = (uhcp_hdr_t *)buf;
 
     if (! (ntohl(hdr->uhcp_magic) == UHCP_MAGIC)) {
-        puts("error: wrong magic number.");
+        /* puts("error: wrong magic number."); */
         return;
     }
 
@@ -37,14 +38,14 @@ void uhcp_handle_udp(uint8_t *buf, size_t len, uint8_t *src, uint16_t port, uhcp
     type = hdr->ver_type & 0xF;
 
     if (ver != UHCP_VER) {
-        puts("error: wrong protocol version.");
+        /* puts("error: wrong protocol version."); */
     }
 
     switch(type) {
 #ifdef UHCP_SERVER
         case UHCP_REQ:
             if (len < sizeof(uhcp_req_t)) {
-                puts("error: request too small\n");
+                /* puts("error: request too small\n"); */
             }
             else {
                 uhcp_handle_req((uhcp_req_t*)hdr, src, port, iface);
@@ -58,7 +59,7 @@ void uhcp_handle_udp(uint8_t *buf, size_t len, uint8_t *src, uint16_t port, uhcp
                 if ((len < sizeof(uhcp_push_t))
                     || (len < (sizeof(uhcp_push_t) + (push->prefix_len >> 3)))
                    ) {
-                    puts("error: request too small\n");
+                    /* puts("error: request too small\n"); */
                 }
                 else {
                     uhcp_handle_push(push, src, port, iface);
@@ -67,7 +68,8 @@ void uhcp_handle_udp(uint8_t *buf, size_t len, uint8_t *src, uint16_t port, uhcp
             }
 #endif
         default:
-             puts("error: unexpected type\n");
+             /* puts("error: unexpected type\n"); */
+            break;
     }
 }
 
@@ -87,7 +89,7 @@ void uhcp_handle_req(uhcp_req_t *req, uint8_t *src, uint16_t port, uhcp_iface_t 
 
     int res = udp_sendto(packet, sizeof(packet), src, port, iface);
     if (res == -1) {
-        printf("uhcp_handle_req(): udp_sendto() res=%i\n", res);
+        /* printf("uhcp_handle_req(): udp_sendto() res=%i\n", res); */
     }
 }
 #endif /* UHCP_SERVER */
@@ -95,6 +97,7 @@ void uhcp_handle_req(uhcp_req_t *req, uint8_t *src, uint16_t port, uhcp_iface_t 
 #ifdef UHCP_CLIENT
 void uhcp_handle_push(uhcp_push_t *req, uint8_t *src, uint16_t port, uhcp_iface_t iface)
 {
+    (void)port;
     char addr_str[INET6_ADDRSTRLEN];
     char prefix_str[INET6_ADDRSTRLEN];
     inet_ntop(AF_INET6, src, addr_str, INET6_ADDRSTRLEN);
@@ -105,7 +108,7 @@ void uhcp_handle_push(uhcp_push_t *req, uint8_t *src, uint16_t port, uhcp_iface_
 
     inet_ntop(AF_INET6, prefix, prefix_str, INET6_ADDRSTRLEN);
 
-    printf("uhcp: push from %s:%u prefix=%s/%u\n", addr_str, (unsigned)port, prefix_str, req->prefix_len);
+    /* printf("uhcp: push from %s:%u prefix=%s/%u\n", addr_str, (unsigned)port, prefix_str, req->prefix_len); */
     uhcp_handle_prefix(prefix, req->prefix_len, 0xFFFF, src, iface);
 }
 #endif

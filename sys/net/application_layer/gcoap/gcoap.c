@@ -852,9 +852,7 @@ size_t gcoap_req_send2(const uint8_t *buf, size_t len,
             }
             if (memo->msg.data.pdu_buf) {
                 memo->send_limit  = COAP_MAX_RETRANSMIT;
-                timeout           = (uint32_t)COAP_ACK_TIMEOUT * US_PER_SEC;
-                uint32_t variance = (uint32_t)COAP_ACK_VARIANCE * US_PER_SEC;
-                timeout = random_uint32_range(timeout, timeout + variance);
+                timeout = (uint32_t)COAP_ACK_TIMEOUT * US_PER_SEC;
             }
             else {
                 memo->state = GCOAP_MEMO_UNUSED;

@@ -27,6 +27,10 @@
 
 #include "net/hopp/hopp.h"
 
+#ifdef MODULE_PKTCNT_FAST
+#include "pktcnt.h"
+#endif
+
 #define CCNL_ENC_HOPP (0x08)
 
 char hopp_stack[HOPP_STACKSZ];
@@ -105,6 +109,9 @@ static void hopp_send_pam(compas_dodag_t *dodag, uint8_t *dst_addr, uint8_t dst_
     ((uint8_t *) pkt->data)[0] = 0x80;
     ((uint8_t *) pkt->data)[1] = CCNL_ENC_HOPP;
     compas_pam_create(dodag, (compas_pam_t *) (((uint8_t *) pkt->data) + 2));
+#ifdef MODULE_PKTCNT_FAST
+    tx_pam++;
+#endif
     hopp_send(pkt, dst_addr, dst_addr_len);
 }
 
@@ -143,6 +150,9 @@ static void hopp_send_sol(compas_dodag_t *dodag, bool force_bcast)
     }
 
     compas_sol_create((compas_sol_t *) (((uint8_t *) pkt->data) + 2), flags);
+#ifdef MODULE_PKTCNT_FAST
+    tx_sol++;
+#endif
     hopp_send(pkt, addr, addr_len);
 
 }
@@ -169,6 +179,9 @@ static void hopp_send_nam(compas_dodag_t *dodag, compas_nam_cache_entry_t *nce)
     compas_nam_create(nam);
     compas_nam_tlv_add_name(nam, &nce->name);
 
+#ifdef MODULE_PKTCNT_FAST
+    tx_nam++;
+#endif
     hopp_send(pkt, dodag->parent.face.face_addr, dodag->parent.face.face_addr_len);
 }
 
@@ -402,14 +415,23 @@ static void hopp_dispatcher(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
     }
     switch (data[2]) {
         case COMPAS_MSG_TYPE_SOL:
+#ifdef MODULE_PKTCNT_FAST
+            rx_sol++;
+#endif
             hopp_handle_sol(dodag, (compas_sol_t *) (data + 2),
                             src_addr, src_addr_len);
             break;
         case COMPAS_MSG_TYPE_PAM:
+#ifdef MODULE_PKTCNT_FAST
+            rx_pam++;
+#endif
             hopp_handle_pam(relay, dodag, (compas_pam_t *) (data + 2),
                             src_addr, src_addr_len);
             break;
         case COMPAS_MSG_TYPE_NAM:
+#ifdef MODULE_PKTCNT_FAST
+            rx_nam++;
+#endif
             hopp_handle_nam(relay, dodag, (compas_nam_t *) (data + 2),
                               src_addr, src_addr_len);
             break;

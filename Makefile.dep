@@ -19,6 +19,14 @@ ifneq (,$(filter csma_sender,$(USEMODULE)))
   USEMODULE += xtimer
 endif
 
+ifneq (,$(filter pktcnt_%,$(USEMODULE)))
+  USEMODULE += pktcnt
+endif
+
+ifneq (,$(filter pktcnt_fast,$(USEMODULE)))
+  USEMODULE += netstats_l2
+endif
+
 ifneq (,$(filter gnrc_mac,$(USEMODULE)))
   USEMODULE += gnrc_priority_pktqueue
   USEMODULE += csma_sender

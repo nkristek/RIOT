@@ -60,6 +60,12 @@ enum {
     TEARDOWN,               /**< connection is being torn down */
 };
 
+#ifdef MODULE_PKTCNT_FAST
+extern uint32_t retransmissions;
+extern char pktcnt_addr_str[17];
+#endif
+
+
 /* the main handler thread needs a stack and a message queue */
 static event_queue_t _queue;
 static char _stack[ASYMCUTE_HANDLER_STACKSIZE];
@@ -171,6 +177,29 @@ static void _compile_sub_unsub(asymcute_req_t *req, asymcute_con_t *con,
 static void _req_resend(asymcute_req_t *req, asymcute_con_t *con)
 {
     event_timeout_set(&req->to_timer, RETRY_TO);
+#ifdef MODULE_PKTCNT_FAST
+    uint8_t type_offset = (req->data[0] != 0x01) ? 1 : 3;
+    uint8_t type = req->data[type_offset];
+    if (req->retry_cnt < ASYMCUTE_N_RETRY) {
+        uint8_t retries = ASYMCUTE_N_RETRY - req->retry_cnt;
+
+        retransmissions++;
+        if (req->msg_id != 0U) {
+            printf("RT-%u;%u-%s\n", retries, req->msg_id, pktcnt_addr_str);
+        }
+        else {
+            printf("RT-%u;T%02x-%s\n", retries, type, pktcnt_addr_str);
+        }
+    }
+    else {
+        if (req->msg_id != 0U) {
+            printf("%02x;%u-%s\n", type, req->msg_id, pktcnt_addr_str);
+        }
+        else {
+            printf("%02x;%s\n", type, pktcnt_addr_str);
+        }
+    }
+#endif
     sock_udp_send(&con->sock, req->data, req->data_len, &con->server_ep);
 }
 
@@ -193,6 +222,16 @@ static void _req_send(asymcute_req_t *req, asymcute_con_t *con,
 
 static void _req_send_once(asymcute_req_t *req, asymcute_con_t *con)
 {
+#ifdef MODULE_PKTCNT_FAST
+    uint8_t type_offset = (req->data[0] != 0x01) ? 1 : 3;
+    uint8_t type = req->data[type_offset];
+    if (req->msg_id != 0U) {
+        printf("%02x;%u-%s\n", type, req->msg_id, pktcnt_addr_str);
+    }
+    else {
+        printf("%02x;%s\n", type, pktcnt_addr_str);
+    }
+#endif
     sock_udp_send(&con->sock, req->data, req->data_len, &con->server_ep);
     mutex_unlock(&req->lock);
 }
@@ -299,6 +338,9 @@ static void _on_keepalive_evt(void *arg)
     if (con->keepalive_retry_cnt) {
         /* (re)send keep alive ping and set dedicated retransmit timer */
         uint8_t ping[2] = { 2, MQTTSN_PINGREQ };
+#ifdef MODULE_PKTCNT_FAST
+        printf("%02x;%s\n", MQTTSN_PINGREQ, pktcnt_addr_str);
+#endif
         sock_udp_send(&con->sock, ping, sizeof(ping), &con->server_ep);
         con->keepalive_retry_cnt--;
         event_timeout_set(&con->keepalive_timer, RETRY_TO);
@@ -314,6 +356,9 @@ static void _on_keepalive_evt(void *arg)
 static void _on_connack(asymcute_con_t *con, const uint8_t *data, size_t len)
 {
     mutex_lock(&con->lock);
+#ifdef MODULE_PKTCNT_FAST
+    printf("%02x;%s\n", MQTTSN_CONNACK, pktcnt_addr_str);
+#endif
     asymcute_req_t *req = _req_preprocess(con, len, MINLEN_CONNACK, NULL, 0);
     if (req == NULL) {
         mutex_unlock(&con->lock);
@@ -365,6 +410,9 @@ static void _on_pingresp(asymcute_con_t *con)
 {
     mutex_lock(&con->lock);
     /* only handle ping resp message if we are actually waiting for a reply */
+#ifdef MODULE_PKTCNT_FAST
+    printf("%02x;%s\n", MQTTSN_PINGRESP, pktcnt_addr_str);
+#endif
     if (con->keepalive_retry_cnt < ASYMCUTE_N_RETRY) {
         event_timeout_clear(&con->keepalive_timer);
         con->keepalive_retry_cnt = ASYMCUTE_N_RETRY;
@@ -376,6 +424,9 @@ static void _on_pingresp(asymcute_con_t *con)
 static void _on_regack(asymcute_con_t *con, const uint8_t *data, size_t len)
 {
     mutex_lock(&con->lock);
+#ifdef MODULE_PKTCNT_FAST
+    printf("%02x;%u-%s\n", MQTTSN_REGACK, data[IDPOS_REGACK], pktcnt_addr_str);
+#endif
     asymcute_req_t *req = _req_preprocess(con, len, MINLEN_REGACK,
                                           data, IDPOS_REGACK);
     if (req == NULL) {
@@ -439,6 +490,9 @@ static void _on_publish(asymcute_con_t *con, uint8_t *data,
 static void _on_puback(asymcute_con_t *con, const uint8_t *data, size_t len)
 {
     mutex_lock(&con->lock);
+#ifdef MODULE_PKTCNT_FAST
+    printf("%02x;%u-%s\n", MQTTSN_PUBACK, data[IDPOS_PUBACK], pktcnt_addr_str);
+#endif
     asymcute_req_t *req = _req_preprocess(con, len, MINLEN_PUBACK,
                                           data, IDPOS_PUBACK);
     if (req == NULL) {
@@ -456,6 +510,9 @@ static void _on_puback(asymcute_con_t *con, const uint8_t *data, size_t len)
 static void _on_suback(asymcute_con_t *con, const uint8_t *data, size_t len)
 {
     mutex_lock(&con->lock);
+#ifdef MODULE_PKTCNT_FAST
+    printf("%02x;%u-%s\n", MQTTSN_SUBACK, data[IDPOS_SUBACK], pktcnt_addr_str);
+#endif
     asymcute_req_t *req = _req_preprocess(con, len, MINLEN_SUBACK,
                                           data, IDPOS_SUBACK);
     if (req == NULL) {
@@ -484,6 +541,9 @@ static void _on_suback(asymcute_con_t *con, const uint8_t *data, size_t len)
 static void _on_unsuback(asymcute_con_t *con, const uint8_t *data, size_t len)
 {
     mutex_lock(&con->lock);
+#ifdef MODULE_PKTCNT_FAST
+    printf("%02x;%u-%s\n", MQTTSN_UNSUBACK, data[IDPOS_UNSUBACK], pktcnt_addr_str);
+#endif
     asymcute_req_t *req = _req_preprocess(con, len, MINLEN_UNSUBACK,
                                           data, IDPOS_UNSUBACK);
     if (req == NULL) {
@@ -640,6 +700,9 @@ end:
 
 void asymcute_handler_run(void)
 {
+#ifdef MODULE_PKTCNT_FAST
+    retransmissions = 0;
+#endif
     thread_create(_stack, sizeof(_stack), ASYMCUTE_HANDLER_PRIO,
                   0, _handler, NULL, "asymcute_main");
 }

@@ -37,6 +37,75 @@
 #define NDN_INTEREST_TYPE   (0x05U)
 #define NDN_DATA_TYPE       (0x06U)
 
+#ifdef MODULE_PKTCNT_FAST
+#include "net/netstats.h"
+
+/* following counters are only for fast mode*/
+uint32_t retransmissions;
+uint32_t tx_interest;
+uint32_t tx_data;
+uint32_t rx_interest;
+uint32_t rx_data;
+uint32_t netdev_evt_tx_noack;
+uint32_t tx_pam;
+uint32_t tx_nam;
+uint32_t tx_sol;
+uint32_t rx_nam;
+uint32_t rx_pam;
+uint32_t rx_sol;
+
+#ifdef MODULE_GNRC_IPV6
+char pktcnt_addr_str[17];
+#endif
+
+void pktcnt_fast_print(void)
+{
+    netstats_t *stats;
+    gnrc_netif_t *netif;
+#if GNRC_NETIF_NUMOF > 1
+    netif = NULL;
+    while ((netif = gnrc_netif_iter(netif))) {
+        if (gnrc_netapi_get(netif->pid, NETOPT_IS_WIRED, 0, NULL, 0) != 1) {
+            break;
+        }
+    }
+#else
+    netif = gnrc_netif_iter(NULL);
+#endif
+    gnrc_netapi_get(netif->pid, NETOPT_STATS, 0, &stats,
+                    sizeof(&stats));
+    printf("STATS;%" PRIu32";%" PRIu32";%" PRIu32";%" PRIu32";%" PRIu32";"
+      "%" PRIu32";%" PRIu32";%" PRIu32";%" PRIu32";%" PRIu32";%" PRIu32";%" PRIu32";"
+      "%" PRIu32";%" PRIu32";%" PRIu32";%" PRIu32";%" PRIu32";%" PRIu32";%" PRIu32"\n",
+        retransmissions,
+        tx_interest,
+        tx_data,
+        rx_interest,
+        rx_data,
+        stats->rx_count,
+        stats->rx_bytes,
+        stats->tx_unicast_count,
+        stats->tx_mcast_count,
+        stats->tx_bytes,
+        stats->tx_success,
+        stats->tx_failed,
+        netdev_evt_tx_noack,
+        tx_pam,
+        tx_nam,
+        tx_sol,
+        rx_nam,
+        rx_pam,
+        rx_sol);
+}
+
+void pktcnt_timer_init(void)
+{
+    puts("");   /* clear buffer from reboot */
+    puts("PKT 00 TIMER 0.00000");   /* fake timer here, I need this to sync my bootstrapping */
+}
+
+#else
+
 enum {
     TYPE_TIMER,
     TYPE_STARTUP,
@@ -48,6 +117,7 @@ typedef struct {
     char id[24];
 } pktcnt_ctx_t;
 
+
 static char pktcnt_stack[PKTCNT_STACKSIZE];
 static kernel_pid_t pktcnt_pid = KERNEL_PID_UNDEF;
 static msg_t pktcnt_msg_queue[PKTCNT_MSG_QUEUE_SIZE];
@@ -58,6 +128,9 @@ static char src[IPV6_ADDR_MAX_STR_LEN], dst[IPV6_ADDR_MAX_STR_LEN];
 
 const char *keyword = "PKT";
 const char *typestr[] = { "TIMER", "STARTUP", "PKT_TX", "PKT_RX", };
+
+
+
 
 static void log_event(int type)
 {
@@ -797,3 +870,4 @@ static void _log_tx(gnrc_pktsnip_t *pkt)
 #endif
     (void)pkt;
 }
+#endif

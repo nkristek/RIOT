@@ -691,6 +691,65 @@ static inline bool _pkt_not_for_me(gnrc_netif_t **netif, ipv6_hdr_t *hdr)
     }
 }
 
+#if defined(MODULE_PKTCNT_FAST) && \
+    defined(MODULE_GNRC_UDP) && \
+    defined(MODULE_GNRC_SIXLOWPAN_BORDER_ROUTER_DEFAULT)
+#include "fmt.h"
+#include "net/udp.h"
+
+static unsigned _code_class(uint8_t code)
+{
+    return code >> 5;
+}
+
+static unsigned _code_detail(uint8_t code)
+{
+    return code & 0x1f;
+}
+
+static void log_coap(uint8_t *payload)
+{
+    uint8_t code = payload[1];
+    printf("%u.%02u;%u-", _code_class(code), _code_detail(code),
+           (((uint16_t)payload[2]) << 8) | (payload[3]));
+}
+
+static void log_mqtt(uint8_t *payload)
+{
+    uint8_t type_offset = (payload[0] != 0x01) ? 1 : 3;
+    uint8_t type = payload[type_offset];
+    uint16_t msgid;
+
+    switch (type) {
+        case 0x0a:  /* REGISTER */
+            msgid = (((uint16_t)payload[type_offset + 3]) << 8) | payload[type_offset + 4];
+            break;
+        case 0x0b:  /* REGACK */
+            msgid = (((uint16_t)payload[type_offset + 3]) << 8) | payload[type_offset + 4];
+            break;
+        case 0x0c:  /* PUBLISH */
+            msgid = (((uint16_t)payload[type_offset + 4]) << 8) | payload[type_offset + 5];
+            break;
+        case 0x0d:  /* PUBACK */
+            msgid = (((uint16_t)payload[type_offset + 3]) << 8) | payload[type_offset + 4];
+            break;
+        case 0x12:  /* SUBSCRIBE */
+            msgid = (((uint16_t)payload[type_offset + 2]) << 8) | payload[type_offset + 3];
+            break;
+        case 0x13:  /* SUBACK */
+            msgid = (((uint16_t)payload[type_offset + 4]) << 8) | payload[type_offset + 5];
+            break;
+        default:
+            printf("%02x;", type);
+            return;
+    }
+    printf("%02x;%u-", type, msgid);
+}
+#endif
+
+#define COAP_PORT           (5683U)
+#define MQTT_PORT           (1883U)
+
 static void _receive(gnrc_pktsnip_t *pkt)
 {
     gnrc_netif_t *netif = NULL;
@@ -833,6 +892,59 @@ static void _receive(gnrc_pktsnip_t *pkt)
             gnrc_pktsnip_t *reversed_pkt = NULL, *ptr = pkt;
 
             DEBUG("ipv6: forward packet to next hop\n");
+#if defined(MODULE_PKTCNT_FAST) && \
+    defined(MODULE_GNRC_UDP) && \
+    defined(MODULE_GNRC_SIXLOWPAN_BORDER_ROUTER_DEFAULT)
+            if (hdr->nh == PROTNUM_UDP) {
+                gnrc_pktsnip_t *udp = gnrc_pktsnip_search_type(pkt, GNRC_NETTYPE_UDP);
+                udp_hdr_t *udp_hdr;
+                uint8_t *iid;
+                uint8_t *udp_payload;
+                char addr_str[17];
+                uint16_t port;
+
+                if (udp != NULL) {
+                    udp_hdr = udp->data;
+                    udp_payload = pkt->data;
+                }
+                else {
+                    udp_hdr = pkt->data;
+                    udp_payload = (uint8_t *)(udp_hdr + 1);
+                }
+                if ((byteorder_ntohs(udp_hdr->src_port) == COAP_PORT) ||
+                    (byteorder_ntohs(udp_hdr->src_port) == MQTT_PORT)) {
+                    /* packet comes from upstream */
+                    iid = &hdr->src.u8[8];
+                    port = byteorder_ntohs(udp_hdr->src_port);
+                }
+                else {
+                    /* packet comes from upstream */
+                    if (hdr->src.u16[0].u16 == 0xfeaf) {
+                        iid = &hdr->dst.u8[8];
+                    }
+                    else {
+                        iid = &hdr->src.u8[8];
+                    }
+                    port = byteorder_ntohs(udp_hdr->dst_port);
+                }
+                fmt_bytes_hex(addr_str, iid, 8);
+                addr_str[16] = '\0';
+                switch (port) {
+                    case COAP_PORT:
+                        printf("FWD-");
+                        log_coap(udp_payload);
+                        printf("%s\n", addr_str);
+                        break;
+                    case MQTT_PORT:
+                        printf("FWD-");
+                        log_mqtt(udp_payload);
+                        printf("%s\n", addr_str);
+                        break;
+                    default:
+                        break;
+                }
+            }
+#endif
 
             /* pkt might not be writable yet, if header was given above */
             ipv6 = gnrc_pktbuf_start_write(ipv6);

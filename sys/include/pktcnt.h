@@ -29,6 +29,23 @@
 extern "C" {
 #endif
 
+#ifdef MODULE_PKTCNT_FAST
+// following counters are only for fast mode
+extern uint32_t retransmissions;
+extern uint32_t tx_interest;
+extern uint32_t tx_data;
+extern uint32_t rx_interest;
+extern uint32_t rx_data;
+extern uint32_t netdev_evt_tx_noack;
+extern uint32_t tx_pam;
+extern uint32_t tx_nam;
+extern uint32_t tx_sol;
+extern uint32_t rx_nam;
+extern uint32_t rx_pam;
+extern uint32_t rx_sol;
+void pktcnt_fast_print(void);
+#endif
+
 enum {
     PKTCNT_OK = 0,
     PKTCNT_ERR_INIT = -1,

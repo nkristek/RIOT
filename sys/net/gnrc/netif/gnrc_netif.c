@@ -1267,7 +1267,7 @@ static void *_gnrc_netif_thread(void *args)
                 break;
             case GNRC_NETAPI_MSG_TYPE_SND:
                 DEBUG("gnrc_netif: GNRC_NETDEV_MSG_TYPE_SND received\n");
-#ifdef MODULE_PKTCNT
+#if defined MODULE_PKTCNT && !defined MODULE_PKTCNT_FAST
                 pktcnt_log_tx(msg.content.ptr);
 #endif
                 res = netif->ops->send(netif, msg.content.ptr);

@@ -259,11 +259,17 @@ int gnrc_ipv6_nib_get_next_hop_l2addr(const ipv6_addr_t *dst,
     return res;
 }
 
+static bool random_initialized = false;
+
 void gnrc_ipv6_nib_handle_pkt(gnrc_netif_t *netif, const ipv6_hdr_t *ipv6,
                               const icmpv6_hdr_t *icmpv6, size_t icmpv6_len)
 {
     DEBUG("nib: Handle packet (icmpv6->type = %u)\n", icmpv6->type);
     assert(netif != NULL);
+    if (!random_initialized) {
+        random_initialized = true;
+        random_init(xtimer_now_usec());
+    }
     gnrc_netif_acquire(netif);
     mutex_lock(&_nib_mutex);
     switch (icmpv6->type) {

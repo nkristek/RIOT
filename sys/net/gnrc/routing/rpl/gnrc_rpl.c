@@ -300,6 +300,8 @@ static void *_event_loop(void *args)
                 reply.content.value = -ENOTSUP;
                 msg_reply(&msg, &reply);
                 break;
+            case GNRC_RPL_MSG_TYPE_KILL:
+                return NULL;
             default:
                 break;
         }

@@ -38,9 +38,19 @@ extern "C" {
 #endif
 
 /**
+ * @name    Message types
+ * @{
+ */
+/**
  * @brief   Message type for passing one 6LoWPAN fragment down the network stack
  */
-#define GNRC_SIXLOWPAN_MSG_FRAG_SND    (0x0225)
+#define GNRC_SIXLOWPAN_MSG_FRAG_SND         (0x0225)
+
+/**
+ * @brief   Message type for triggering garbage collection reassembly buffer
+ */
+#define GNRC_SIXLOWPAN_MSG_FRAG_GC_RBUF     (0x0226)
+/** @} */
 
 /**
  * @brief   Definition of 6LoWPAN fragmentation type.
@@ -67,6 +77,11 @@ void gnrc_sixlowpan_frag_send(gnrc_sixlowpan_msg_frag_t *fragment_msg);
  * @param[in] pkt   The packet to handle.
  */
 void gnrc_sixlowpan_frag_handle_pkt(gnrc_pktsnip_t *pkt);
+
+/**
+ * @brief   Garbage collect reassembly buffer.
+ */
+void gnrc_sixlowpan_frag_gc_rbuf(void);
 
 #ifdef __cplusplus
 }

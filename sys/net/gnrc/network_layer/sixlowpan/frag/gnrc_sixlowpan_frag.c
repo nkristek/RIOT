@@ -304,4 +304,9 @@ void gnrc_sixlowpan_frag_handle_pkt(gnrc_pktsnip_t *pkt)
     gnrc_pktbuf_release(pkt);
 }
 
+void gnrc_sixlowpan_frag_gc_rbuf(void)
+{
+    rbuf_gc();
+}
+
 /** @} */

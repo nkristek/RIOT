@@ -27,7 +27,11 @@
 
 #include "net/hopp/hopp.h"
 
+#include "hashes/sha256.h"
 #include "libbase58.h"
+#define ENABLE_DEBUG    (1)
+//#include "debug.h"
+
 #ifdef MODULE_PKTCNT_FAST
 #include "pktcnt.h"
 #endif
@@ -46,10 +50,10 @@ static struct ccnl_face_s *loopback_face;
 static msg_t hopp_q[HOPP_QSZ];
 static evtimer_msg_t evtimer;
 compas_dodag_t dodag;
-static evtimer_msg_event_t sol_msg_evt = { .msg.type = HOPP_SOL_MSG };
-static evtimer_msg_event_t pam_msg_evt = { .msg.type = HOPP_PAM_MSG };
+static evtimer_msg_event_t sol_msg_evt = { .msg = { .type = HOPP_SOL_MSG } };
+static evtimer_msg_event_t pam_msg_evt = { .msg = { .type = HOPP_PAM_MSG } };
 //static evtimer_msg_event_t nam_msg_evt = { .msg.type = HOPP_NAM_MSG };
-static evtimer_msg_event_t pto_msg_evt = { .msg.type = HOPP_PARENT_TIMEOUT_MSG };
+static evtimer_msg_event_t pto_msg_evt = { .msg = { .type = HOPP_PARENT_TIMEOUT_MSG } };
 static uint32_t nce_times[COMPAS_NAM_CACHE_LEN];
 static evtimer_msg_event_t nam_msg_evts[COMPAS_NAM_CACHE_LEN];
 
@@ -305,6 +309,7 @@ void hopp_request(struct ccnl_relay_s *relay, compas_nam_cache_entry_t *nce)
 static void hopp_handle_nam(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
                             compas_nam_t *nam, uint8_t *src_addr, uint8_t src_addr_len)
 {
+    //DEBUG("hopp_handle_nam:");
     uint16_t offset = 0;
     compas_tlv_t *tlv = NULL;
 
@@ -419,6 +424,7 @@ static void hopp_dispatcher(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
 #ifdef MODULE_PKTCNT_FAST
             rx_sol++;
 #endif
+            DEBUG("hopp_dispatcher:SOL\n");
             hopp_handle_sol(dodag, (compas_sol_t *) (data + 2),
                             src_addr, src_addr_len);
             break;
@@ -426,6 +432,7 @@ static void hopp_dispatcher(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
 #ifdef MODULE_PKTCNT_FAST
             rx_pam++;
 #endif
+            DEBUG("hopp_dispatcher:PAM\n");
             hopp_handle_pam(relay, dodag, (compas_pam_t *) (data + 2),
                             src_addr, src_addr_len);
             break;
@@ -433,10 +440,12 @@ static void hopp_dispatcher(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
 #ifdef MODULE_PKTCNT_FAST
             rx_nam++;
 #endif
+            DEBUG("hopp_dispatcher:NAM\n");
             hopp_handle_nam(relay, dodag, (compas_nam_t *) (data + 2),
                               src_addr, src_addr_len);
             break;
         default:
+            DEBUG("hopp_dispatcher:default:%u\n", data[2]);
             break;
     }
 }
@@ -488,6 +497,7 @@ static int content_send(struct ccnl_relay_s *relay, struct ccnl_pkt_s *pkt) {
 static int content_requested(struct ccnl_relay_s *relay, struct ccnl_pkt_s *p,
                              struct ccnl_face_s *from)
 {
+    // TODO
     (void) relay;
     (void) from;
     char *s = ccnl_prefix_to_path(p->pfx);
@@ -547,6 +557,7 @@ void *hopp(void *arg)
 
         switch (msg.type) {
             case HOPP_SOL_MSG:
+                DEBUG("hopp:HOPP_SOL_MSG\n");
                 if ((dodag.rank != COMPAS_DODAG_ROOT_RANK) &&
                     (dodag.rank == COMPAS_DODAG_UNDEF || !dodag.parent.alive)) {
                     hopp_send_sol(&dodag, false);
@@ -563,6 +574,7 @@ void *hopp(void *arg)
                 }
                 break;
             case HOPP_PAM_MSG:
+                DEBUG("hopp:HOPP_PAM_MSG\n");
                 if (dodag.rank != COMPAS_DODAG_UNDEF) {
                     hopp_send_pam(&dodag, NULL, 0, true);
                     uint64_t trickle_int = trickle_next(&dodag.trickle);
@@ -572,6 +584,7 @@ void *hopp(void *arg)
                 }
                 break;
             case HOPP_NAM_MSG:
+                DEBUG("hopp:HOPP_NAM_MSG\n");
                 nce = (compas_nam_cache_entry_t *) msg.content.ptr;
                 pos = nce - dodag.nam_cache;
                 evtimer_del(&evtimer, (evtimer_event_t *)&nam_msg_evts[pos]);
@@ -587,17 +600,21 @@ void *hopp(void *arg)
 
                 break;
             case HOPP_NAM_DEL_MSG:
+                DEBUG("hopp:HOPP_NAM_DEL_MSG\n");
                 nce = (compas_nam_cache_entry_t *) msg.content.ptr;
                 hopp_nce_del(&dodag, nce);
                 break;
             case HOPP_PARENT_TIMEOUT_MSG:
+                DEBUG("hopp:HOPP_PARENT_TIMEOUT_MSG\n");
                 hopp_parent_timeout(&dodag);
                 break;
             case HOPP_STOP_MSG:
+                DEBUG("hopp:HOPP_STOP_MSG\n");
                 ccnl_callback_set_data_send(NULL);
                 ccnl_callback_set_data_received(NULL);
                 return NULL;
             case GNRC_NETAPI_MSG_TYPE_RCV:
+                DEBUG("hopp:GNRC_NETAPI_MSG_TYPE_RCV\n");
                 pkt = (gnrc_pktsnip_t *) msg.content.ptr;
                 netif_snip = gnrc_pktsnip_search_type(pkt, GNRC_NETTYPE_NETIF);
                 if (netif_snip) {
@@ -611,6 +628,7 @@ void *hopp(void *arg)
                 gnrc_pktbuf_release(pkt);
                 break;
             default:
+                DEBUG("hopp:default:%u\n", msg.type);
                 break;
         }
     }
@@ -663,6 +681,66 @@ bool hopp_publish_content(const char *name, size_t name_len,
         msg_try_send(&msg, hopp_pid);
 
         return true;
+    }
+
+    return false;
+}
+
+#define RD_JSON_FORMAT "[{\"t\":\"r\",\"n\":\"%s\",\"p\":{\"ct\":\"%s\",\"lt\":%s}}]"
+
+bool rd_register(const char *name, size_t name_len,
+                 const char *contenttype, size_t contenttype_len,
+                 const char *lifetime, size_t lifetime_len)
+{
+    if (name_len <= 0 || contenttype_len <= 0 || lifetime_len <= 0) {
+        return false;
+    }
+
+/*
+[
+    {
+        "type": "register",
+        "name": "room105-temperature",
+        "parameters": {
+            "ct": "temperature",
+            "lt": 60
+        }
+    }
+]
+*/
+
+    // build message
+    size_t json_format_len = sizeof(RD_JSON_FORMAT) - 7; // 6 is the count of the characters of the 3 %s + 1 0 terminator
+    size_t message_len = json_format_len + name_len + contenttype_len + lifetime_len;
+    char message[message_len];
+    snprintf(message, message_len, RD_JSON_FORMAT, name, contenttype, lifetime);
+    message[message_len - 1] = 0;
+
+    DEBUG("message: %s\n", message);
+
+    // build hash of message
+    unsigned char *hash = sha256(message, message_len, NULL);
+    char register_message_name[48];
+    size_t hash_fmt_len = sizeof(register_message_name)-3;
+    strcpy(register_message_name, "rd/");
+    if (!b58enc(&register_message_name[3], &hash_fmt_len, hash, 32))
+    {
+        puts("ERROR");
+        return false;
+    }
+    
+    DEBUG("name: %s\n", register_message_name);
+    DEBUG("namelen: %u\n", strlen(register_message_name));
+
+    return hopp_publish_content(register_message_name, strlen(register_message_name), (unsigned char*) message, message_len);
+}
+
+
+bool rd_lookup(const char *contenttype, size_t contenttype_len)
+{
+    // TODO: do lookup
+    if (contenttype_len > 0) {
+        printf("%s", contenttype);
     }
 
     return false;

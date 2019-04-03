@@ -75,9 +75,52 @@ static int _publish(int argc, char **argv)
     return 0;
 }
 
+static int _register(int argc, char **argv)
+{
+    if (argc != 4) {
+        printf("usage: %s <name> <contenttype> <lifetime>\n", argv[0]);
+        //return -1;
+
+        char *name = "room105-temperature";
+        char *contenttype = "temperature";
+        char *lifetime = "60";
+
+        printf("registering with default arguments:\n");
+        printf("name: %s\n", name);
+        printf("contenttype: %s\n", contenttype);
+        printf("lifetime: %s\n", lifetime);
+
+        rd_register((const char *)name, strlen(name),
+                    (const char *)contenttype, strlen(contenttype),
+                    (const char *)lifetime, strlen(lifetime));
+
+        return 0;
+    }
+
+    rd_register((const char *)argv[1], strlen(argv[1]), 
+                (const char *)argv[2], strlen(argv[2]),
+                (const char *)argv[3], strlen(argv[3]));
+    
+    return 0;
+}
+
+static int _lookup(int argc, char **argv)
+{
+    if (argc != 2) {
+        printf("usage: %s <contenttype>\n", argv[0]);
+        return -1;
+    }
+    
+    rd_lookup((const char *)argv[1], strlen(argv[1]));
+    
+    return 0;
+}
+
 static const shell_command_t shell_commands[] = {
-    { "hr", "start HoPP root", _root },
-    { "hp", "publish data", _publish },
+    { "hr", "start HoPP root with the given prefix", _root },
+    { "hp", "publish data with the given name", _publish },
+    { "rdr", "register a resource: rdr <name> <contenttype> <lifetime>", _register },
+    { "rdl", "lookup resources: rdl <contenttype>", _lookup },
     { NULL, NULL, NULL }
 };
 
@@ -108,10 +151,12 @@ int main(void)
     gnrc_netif_addr_to_str(hwaddr, sizeof(hwaddr), hwaddr_str);
 
     /* init pktcnt */
+    /*
     if (pktcnt_init() != PKTCNT_OK) {
         puts("error: unable to initialize pktcnt");
         return 1;
     }
+    */
 
     hopp_pid = thread_create(hopp_stack, sizeof(hopp_stack), THREAD_PRIORITY_MAIN - 1,
                              THREAD_CREATE_STACKTEST, hopp, &ccnl_relay,

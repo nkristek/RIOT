@@ -100,5 +100,9 @@ void hopp_root_start(const char *prefix, size_t prefix_len);
 bool hopp_publish_content(const char *name, size_t name_len,
                           unsigned char *content, size_t content_len);
 void hopp_set_cb_published(hopp_cb_published cb);
+bool rd_register(const char *name, size_t name_len,
+                 const char *contenttype, size_t contenttype_len,
+                 const char *lifetime, size_t lifetime_len);
+bool rd_lookup(const char *contenttype, size_t contenttype_len);
 
 #endif /* HOPP_H */

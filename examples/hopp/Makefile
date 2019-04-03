@@ -29,6 +29,7 @@ CFLAGS += -DCCNL_QUEUE_SIZE=32
 CFLAGS += -D_NETIF_NETAPI_MSG_QUEUE_SIZE=32
 CFLAGS += -DCCNL_CONTENT_TIMEOUT=10
 #CFLAGS += -DNOPUBSUB
+#CFLAGS += -DENABLE_DEBUG=1
 
 # Change this to 0 show compiler invocation lines by default:
 QUIET ?= 1
@@ -49,6 +50,9 @@ USEMODULE += netstats_l2
 #USEMODULE += l2filter_blacklist
 USEMODULE += hopp
 USEMODULE += pktcnt
+
+USEMODULE += hashes
+USEMODULE += fmt
 
 USEPKG += tlsf
 USEPKG += ccn-lite

@@ -27,6 +27,7 @@
 
 #include "net/hopp/hopp.h"
 
+#include "libbase58.h"
 #ifdef MODULE_PKTCNT_FAST
 #include "pktcnt.h"
 #endif

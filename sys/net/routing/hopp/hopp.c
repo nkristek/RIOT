@@ -286,6 +286,7 @@ void hopp_request(struct ccnl_relay_s *relay, compas_nam_cache_entry_t *nce)
     char name[COMPAS_NAME_LEN + 1];
     memcpy(name, nce->name.name, nce->name.name_len);
     name[nce->name.name_len] = '\0';
+    DEBUG("hopp_request: name to request: %s\n", name);
     struct ccnl_prefix_s *prefix = ccnl_URItoPrefix(name, CCNL_SUITE_NDNTLV, NULL, NULL);
     sockunion su;
     memset(&su, 0, sizeof(su));
@@ -324,6 +325,7 @@ static void hopp_handle_nam(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
             char name[COMPAS_NAME_LEN + 1];
             memcpy(name, cname.name, cname.name_len);
             name[cname.name_len] = '\0';
+            DEBUG("hopp_handle_nam: Handle NAM with name: %s\n", name);
             compas_nam_cache_entry_t *n = compas_nam_cache_find(dodag, &cname);
             if (!n) {
                 n = compas_nam_cache_add(dodag, &cname, &face);
@@ -360,6 +362,7 @@ static void hopp_handle_nam(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
                 }
             }
             if (n) {
+                DEBUG("hopp_handle_nam: Send interest\n");
                 nce_times[n - dodag->nam_cache] = xtimer_now_usec();
                 hopp_request(relay, n);
 #if 0
@@ -497,13 +500,15 @@ static int content_send(struct ccnl_relay_s *relay, struct ccnl_pkt_s *pkt) {
 static int content_requested(struct ccnl_relay_s *relay, struct ccnl_pkt_s *p,
                              struct ccnl_face_s *from)
 {
-    // TODO
+    DEBUG("content_requested\n");
+
     (void) relay;
     (void) from;
     char *s = ccnl_prefix_to_path(p->pfx);
 
     compas_name_t cname;
     compas_name_init(&cname, s, strlen(s));
+    DEBUG("content_requested: Name of requested content: %.*s\n", cname.name_len, cname.name);
     compas_nam_cache_entry_t *n = compas_nam_cache_find(&dodag, &cname);
 
     if (n) {
@@ -513,14 +518,19 @@ static int content_requested(struct ccnl_relay_s *relay, struct ccnl_pkt_s *p,
 
         msg_t msg = { .content.ptr = n };
         if ((dodag.rank == COMPAS_DODAG_ROOT_RANK)) {
+            DEBUG("Content requested: is root\n");
+            DEBUG("Content:\n%.*s\n", p->contlen, p->content);
             msg.type = HOPP_NAM_DEL_MSG;
         }
         else {
+            DEBUG("Content requested: is not root\n");
             n->flags |= COMPAS_NAM_CACHE_FLAGS_REQUESTED;
             n->retries = COMPAS_NAM_CACHE_RETRIES;
             msg.type = HOPP_NAM_MSG;
         }
         msg_try_send(&msg, hopp_pid);
+    } else {
+        DEBUG("content_requested: corresponding NAM not found in cache\n");
     }
 
     ccnl_free(s);
@@ -652,9 +662,12 @@ bool hopp_publish_content(const char *name, size_t name_len,
 {
     static compas_name_t cname;
     compas_name_init(&cname, name, name_len);
+    DEBUG("hopp_publish_content: name to publish: %s\n", name);
+    DEBUG("hopp_publish_content: published name: %s\n", cname.name);
     compas_nam_cache_entry_t *nce = compas_nam_cache_add(&dodag, &cname, NULL);
 
     if (nce) {
+        DEBUG("hopp_publish_content: Adding name cache entry was successfull\n");
         nce->flags |= COMPAS_NAM_CACHE_FLAGS_REQUESTED;
         static char prefix_n[COMPAS_NAME_LEN + 1];
         memcpy(prefix_n, cname.name, cname.name_len);
@@ -663,29 +676,57 @@ bool hopp_publish_content(const char *name, size_t name_len,
         int offs = CCNL_MAX_PACKET_SIZE;
         content_len = ccnl_ndntlv_prependContent(prefix, (unsigned char*) content, content_len, NULL, NULL, &offs, _out);
         ccnl_prefix_free(prefix);
+        if ((int)content_len < 0) {
+            DEBUG("Error, Content length: %i\n", content_len);
+            return false;
+        }
         unsigned char *olddata;
         unsigned char *data = olddata = _out + offs;
         int len;
         unsigned typ;
         if (ccnl_ndntlv_dehead(&data, (int *)&content_len, (int*) &typ, &len) ||
             typ != NDN_TLV_Data) {
-            return -1;
+            DEBUG("hopp_publish_content: ccnl_ndntlv_dehead -> return -1\n");
+            return false;
         }
         struct ccnl_pkt_s *pk = ccnl_ndntlv_bytes2pkt(typ, olddata, &data, (int *)&content_len);
         struct ccnl_content_s *c = ccnl_content_new(&pk);
 
         msg_t ms = { .type = CCNL_MSG_ADD_CS, .content.ptr = c };
-        msg_send(&ms, _ccnl_event_loop_pid);
+        int res = msg_send(&ms, _ccnl_event_loop_pid);
+        DEBUG("hopp_publish_content: msg send ccnl: %i\n", res);
 
         msg_t msg = { .type = HOPP_NAM_MSG, .content.ptr = nce };
-        msg_try_send(&msg, hopp_pid);
+        res = msg_try_send(&msg, hopp_pid);
+        DEBUG("hopp_publish_content: msg send hopp: %i\n", res);
 
         return true;
+    } else {
+        DEBUG("hopp_publish_content: Adding name cache entry failed\n");
     }
 
     return false;
 }
 
+/* 
+- t = type
+- t.r = register
+- t.u = update
+- t.d = delete
+- n = name
+- p = parameters
+
+[
+    {
+        "t": "r",
+        "n": "room105-temperature",
+        "p": {
+            "ct": "temperature",
+            "lt": 60
+        }
+    }
+]
+*/
 #define RD_JSON_FORMAT "[{\"t\":\"r\",\"n\":\"%s\",\"p\":{\"ct\":\"%s\",\"lt\":%s}}]"
 
 bool rd_register(const char *name, size_t name_len,
@@ -696,41 +737,32 @@ bool rd_register(const char *name, size_t name_len,
         return false;
     }
 
-/*
-[
-    {
-        "type": "register",
-        "name": "room105-temperature",
-        "parameters": {
-            "ct": "temperature",
-            "lt": 60
-        }
-    }
-]
-*/
+    // build message content
 
-    // build message
-    size_t json_format_len = sizeof(RD_JSON_FORMAT) - 7; // 6 is the count of the characters of the 3 %s + 1 0 terminator
+    size_t json_format_len = sizeof(RD_JSON_FORMAT) - 7; // 6 is the count of the characters of the 3 %s + 0 terminator
     size_t message_len = json_format_len + name_len + contenttype_len + lifetime_len;
     char message[message_len];
     snprintf(message, message_len, RD_JSON_FORMAT, name, contenttype, lifetime);
     message[message_len - 1] = 0;
 
-    DEBUG("message: %s\n", message);
+    DEBUG("registration message: %s\n", message);
 
-    // build hash of message
-    unsigned char *hash = sha256(message, message_len, NULL);
-    char register_message_name[48];
-    size_t hash_fmt_len = sizeof(register_message_name)-3;
-    strcpy(register_message_name, "rd/");
-    if (!b58enc(&register_message_name[3], &hash_fmt_len, hash, 32))
+    // build message name
+
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    sha256(message, message_len, hash);
+
+    char register_message_name[64];
+    size_t register_message_name_len = sizeof(register_message_name)-4;
+    strcpy(register_message_name, "/rd/");
+    if (!b58enc(&register_message_name[4], &register_message_name_len, hash, 32))
     {
-        puts("ERROR");
+        puts("ERROR, b58enc failed.");
         return false;
     }
-    
-    DEBUG("name: %s\n", register_message_name);
-    DEBUG("namelen: %u\n", strlen(register_message_name));
+    register_message_name[32] = 0;
+    DEBUG("name of registration message: %s\n", register_message_name);
+    DEBUG("length of name of registration message: %i\n", strlen(register_message_name));
 
     return hopp_publish_content(register_message_name, strlen(register_message_name), (unsigned char*) message, message_len);
 }

@@ -90,11 +90,14 @@ static int _register(int argc, char **argv)
         printf("contenttype: %s\n", contenttype);
         printf("lifetime: %s\n", lifetime);
 
-        rd_register((const char *)name, strlen(name),
-                    (const char *)contenttype, strlen(contenttype),
-                    (const char *)lifetime, strlen(lifetime));
+        if (rd_register((const char *)name, strlen(name),
+                        (const char *)contenttype, strlen(contenttype),
+                        (const char *)lifetime, strlen(lifetime))) {
+            return 0;
+        }
 
-        return 0;
+        printf("Publish failed\n");
+        return -1;
     }
 
     rd_register((const char *)argv[1], strlen(argv[1]), 

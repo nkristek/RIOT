@@ -642,17 +642,20 @@ bool hopp_publish_content(const char *name, size_t name_len,
         prefix_n[cname.name_len] = '\0';
         struct ccnl_prefix_s *prefix = ccnl_URItoPrefix(prefix_n, CCNL_SUITE_NDNTLV, NULL, NULL);
         int offs = CCNL_MAX_PACKET_SIZE;
-        content_len = ccnl_ndntlv_prependContent(prefix, (unsigned char*) content, content_len, NULL, NULL, &offs, _out);
+        int ccnl_content_len = ccnl_ndntlv_prependContent(prefix, (unsigned char*) content, content_len, NULL, NULL, &offs, _out);
+        if (ccnl_content_len < 0) {
+            return false;
+        }
         ccnl_prefix_free(prefix);
         unsigned char *olddata;
         unsigned char *data = olddata = _out + offs;
         int len;
         unsigned typ;
-        if (ccnl_ndntlv_dehead(&data, (int *)&content_len, (int*) &typ, &len) ||
+        if (ccnl_ndntlv_dehead(&data, &ccnl_content_len, (int*) &typ, &len) ||
             typ != NDN_TLV_Data) {
             return -1;
         }
-        struct ccnl_pkt_s *pk = ccnl_ndntlv_bytes2pkt(typ, olddata, &data, (int *)&content_len);
+        struct ccnl_pkt_s *pk = ccnl_ndntlv_bytes2pkt(typ, olddata, &data, &ccnl_content_len);
         struct ccnl_content_s *c = ccnl_content_new(&pk);
 
         msg_t ms = { .type = CCNL_MSG_ADD_CS, .content.ptr = c };

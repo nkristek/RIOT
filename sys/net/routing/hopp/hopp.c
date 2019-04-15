@@ -662,8 +662,8 @@ bool hopp_publish_content(const char *name, size_t name_len,
 {
     static compas_name_t cname;
     compas_name_init(&cname, name, name_len);
-    DEBUG("hopp_publish_content: name to publish: %s\n", name);
-    DEBUG("hopp_publish_content: published name: %s\n", cname.name);
+    DEBUG("hopp_publish_content: name to publish: %.*s\n", name_len, name);
+    DEBUG("hopp_publish_content: published name: %.*s\n", cname.name_len, cname.name);
     compas_nam_cache_entry_t *nce = compas_nam_cache_add(&dodag, &cname, NULL);
 
     if (nce) {
@@ -686,7 +686,7 @@ bool hopp_publish_content(const char *name, size_t name_len,
         unsigned typ;
         if (ccnl_ndntlv_dehead(&data, (int *)&content_len, (int*) &typ, &len) ||
             typ != NDN_TLV_Data) {
-            DEBUG("hopp_publish_content: ccnl_ndntlv_dehead -> return -1\n");
+            DEBUG("hopp_publish_content: ccnl_ndntlv_dehead\n");
             return false;
         }
         struct ccnl_pkt_s *pk = ccnl_ndntlv_bytes2pkt(typ, olddata, &data, (int *)&content_len);

@@ -45,10 +45,10 @@ static struct ccnl_face_s *loopback_face;
 static msg_t hopp_q[HOPP_QSZ];
 static evtimer_msg_t evtimer;
 compas_dodag_t dodag;
-static evtimer_msg_event_t sol_msg_evt = { .msg.type = HOPP_SOL_MSG };
-static evtimer_msg_event_t pam_msg_evt = { .msg.type = HOPP_PAM_MSG };
+static evtimer_msg_event_t sol_msg_evt = { .msg = { .type = HOPP_SOL_MSG } };
+static evtimer_msg_event_t pam_msg_evt = { .msg = { .type = HOPP_PAM_MSG } };
 //static evtimer_msg_event_t nam_msg_evt = { .msg.type = HOPP_NAM_MSG };
-static evtimer_msg_event_t pto_msg_evt = { .msg.type = HOPP_PARENT_TIMEOUT_MSG };
+static evtimer_msg_event_t pto_msg_evt = { .msg = { .type = HOPP_PARENT_TIMEOUT_MSG } };
 static uint32_t nce_times[COMPAS_NAM_CACHE_LEN];
 static evtimer_msg_event_t nam_msg_evts[COMPAS_NAM_CACHE_LEN];
 

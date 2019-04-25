@@ -576,7 +576,8 @@ static int encode_registration(rd_entry_t *entry,
 }
 
 static int parse_registration(rd_entry_t *entry, 
-                              const uint8_t *content, size_t content_len) {
+                              const uint8_t *content, size_t content_len) 
+{
     char name[COMPAS_NAME_LEN];
     size_t name_len = COMPAS_NAME_LEN;
     char type[COMPAS_NAME_LEN];
@@ -586,54 +587,68 @@ static int parse_registration(rd_entry_t *entry,
     CborParser parser;
     CborValue value, containerValue;
     if (cbor_parser_init(content, content_len, 0, &parser, &value) != CborNoError) {
-        DEBUG("parse_registration: \n");
+        DEBUG("parse_registration: error creating parser\n");
         return -1;
     }
-    if (!cbor_value_is_map(&value) || cbor_value_enter_container(&value, &containerValue) != CborNoError) {
-        DEBUG("parse_registration: \n");
+    if (!cbor_value_is_map(&value)) {
+        DEBUG("parse_registration: error value is not map\n");
+        return -1;
+    }
+    if (cbor_value_enter_container(&value, &containerValue) != CborNoError) {
+        DEBUG("parse_registration: error entering map\n");
         return -1;
     }
 
     // Name
     CborValue nameValue;
-    if (cbor_value_map_find_value(&value, "n", &nameValue) != CborNoError || !cbor_value_is_text_string(&nameValue)) {
-        DEBUG("parse_registration: \n");
+    if (cbor_value_map_find_value(&value, "n", &nameValue) != CborNoError) {
+        DEBUG("parse_registration: error finding field n\n");
         return -1;
     }
-    DEBUG("Found value\n");
+    if (!cbor_value_is_text_string(&nameValue)) {
+        DEBUG("parse_registration: error field n is not text string\n");
+        return -1;
+    }
     if (cbor_value_get_string_length(&nameValue, &name_len) != CborNoError || type_len > COMPAS_NAME_LEN) {
-        DEBUG("parse_registration: \n");
+        DEBUG("parse_registration: error getting length of value of field n\n");
         return -1;
     }
-    DEBUG("Got value length\n");
     if (cbor_value_copy_text_string(&nameValue, name, &name_len, NULL)) {
-        DEBUG("parse_registration: \n");
+        DEBUG("parse_registration: error getting value of field n\n");
         return -1;
     }
 
     // Type
     CborValue typeValue;
-    if (cbor_value_map_find_value(&value, "t", &typeValue) != CborNoError || !cbor_value_is_text_string(&typeValue)) {
-        DEBUG("parse_registration: \n");
+    if (cbor_value_map_find_value(&value, "t", &typeValue) != CborNoError) {
+        DEBUG("parse_registration: error finding field t\n");
+        return -1;
+    }
+    if (!cbor_value_is_text_string(&typeValue)) {
+        DEBUG("parse_registration: error field t is not text string\n");
         return -1;
     }
     if (cbor_value_get_string_length(&typeValue, &type_len) != CborNoError || type_len > COMPAS_NAME_LEN) {
-        DEBUG("parse_registration: \n");
+        DEBUG("parse_registration: error getting length of value of field t\n");
         return -1;
     }
     if (cbor_value_copy_text_string(&typeValue, type, &type_len, NULL)) {
-        DEBUG("parse_registration: \n");
+        DEBUG("parse_registration: error getting value of field t\n");
         return -1;
     }
 
     // Lifetime
     CborValue lifetimeValue;
-    if (cbor_value_map_find_value(&value, "lt", &lifetimeValue) != CborNoError || !cbor_value_is_unsigned_integer(&lifetimeValue)) {
-        DEBUG("parse_registration: \n");
+    if (cbor_value_map_find_value(&value, "lt", &lifetimeValue) != CborNoError) {
+        DEBUG("parse_registration: error finding field lt \n");
+        return -1;
+    }
+    if (!cbor_value_is_unsigned_integer(&lifetimeValue)) {
+        DEBUG("parse_registration: error field lt is not unsigned integer\n");
         return -1;
     }
     if (cbor_value_get_uint64(&lifetimeValue, &lifetime) != CborNoError) {
-        DEBUG("parse_registration: \n");
+        DEBUG("parse_registration: error gettings value of field lt\n");
         return -1;
     }
 

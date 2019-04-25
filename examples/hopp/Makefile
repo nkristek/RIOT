@@ -51,9 +51,6 @@ USEMODULE += netstats_l2
 USEMODULE += hopp
 USEMODULE += pktcnt
 
-USEMODULE += hashes
-USEMODULE += fmt
-
 USEPKG += tlsf
 USEPKG += ccn-lite
 USEPKG += compas

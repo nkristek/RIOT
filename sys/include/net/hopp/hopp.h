@@ -102,7 +102,7 @@ bool hopp_publish_content(const char *name, size_t name_len,
 void hopp_set_cb_published(hopp_cb_published cb);
 bool rd_register(const char *name, size_t name_len,
                  const char *contenttype, size_t contenttype_len,
-                 const char *lifetime, size_t lifetime_len);
+                 uint64_t lifetime);
 bool rd_lookup(const char *contenttype, size_t contenttype_len);
 
 #endif /* HOPP_H */

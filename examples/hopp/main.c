@@ -78,21 +78,21 @@ static int _publish(int argc, char **argv)
 static int _register(int argc, char **argv)
 {
     if (argc != 4) {
-        printf("usage: %s <name> <contenttype> <lifetime>\n", argv[0]);
+        //printf("usage: %s <name> <contenttype> <lifetime>\n", argv[0]);
         //return -1;
 
         char *name = "room105-temperature";
         char *contenttype = "temperature";
-        char *lifetime = "60";
+        uint64_t lifetime = 90;
 
         printf("registering with default arguments:\n");
         printf("name: %s\n", name);
         printf("contenttype: %s\n", contenttype);
-        printf("lifetime: %s\n", lifetime);
+        printf("lifetime: %llu\n", lifetime);
 
         if (rd_register((const char *)name, strlen(name),
                         (const char *)contenttype, strlen(contenttype),
-                        (const char *)lifetime, strlen(lifetime))) {
+                        lifetime)) {
             return 0;
         }
 
@@ -102,7 +102,7 @@ static int _register(int argc, char **argv)
 
     rd_register((const char *)argv[1], strlen(argv[1]), 
                 (const char *)argv[2], strlen(argv[2]),
-                (const char *)argv[3], strlen(argv[3]));
+                90);
     
     return 0;
 }

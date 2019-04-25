@@ -771,4 +771,6 @@ endif
 
 ifneq (,$(filter hopp,$(USEMODULE)))
   USEPKG += libbase58
+  USEPKG += tinycbor
+  USEMODULE += hashes
 endif

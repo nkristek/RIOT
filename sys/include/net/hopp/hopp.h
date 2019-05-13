@@ -86,10 +86,23 @@
 #define HOPP_INTEREST_BUFSIZE       (64)
 #endif
 
+#ifndef LOOKUP_QSZ
+#define LOOKUP_QSZ  (8)
+#endif
+#ifndef LOOKUP_REQUEST
+#define LOOKUP_REQUEST               (0xBFF7)
+#endif
+#ifndef LOOKUP_RESPONSE
+#define LOOKUP_RESPONSE               (0xBFF8)
+#endif
+
 extern char hopp_stack[HOPP_STACKSZ];
 extern gnrc_netif_t *hopp_netif;
 extern kernel_pid_t hopp_pid;
 extern compas_dodag_t dodag;
+
+extern char lookup_stack[THREAD_STACKSIZE_DEFAULT];
+extern kernel_pid_t lookup_pid;
 
 typedef void (*hopp_cb_published)(struct ccnl_relay_s *relay,
                                   struct ccnl_pkt_s *pkt,
@@ -100,6 +113,8 @@ void hopp_root_start(const char *prefix, size_t prefix_len);
 bool hopp_publish_content(const char *name, size_t name_len,
                           unsigned char *content, size_t content_len);
 void hopp_set_cb_published(hopp_cb_published cb);
+
+void *lookup(void *arg);
 bool rd_register(const char *name, size_t name_len,
                  const char *contenttype, size_t contenttype_len,
                  uint64_t lifetime);

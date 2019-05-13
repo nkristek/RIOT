@@ -30,6 +30,7 @@
 #include "hashes/sha256.h"
 #include "libbase58.h"
 #include "cbor.h"
+#include "thread.h"
 #define ENABLE_DEBUG    (1)
 //#include "debug.h"
 
@@ -59,6 +60,11 @@ static uint32_t nce_times[COMPAS_NAM_CACHE_LEN];
 static evtimer_msg_event_t nam_msg_evts[COMPAS_NAM_CACHE_LEN];
 
 static hopp_cb_published cb_published = NULL;
+
+
+char lookup_stack[THREAD_STACKSIZE_DEFAULT];
+kernel_pid_t lookup_pid;
+static msg_t lookup_q[LOOKUP_QSZ];
 
 void hopp_set_cb_published(hopp_cb_published cb)
 {
@@ -312,7 +318,6 @@ void hopp_request(struct ccnl_relay_s *relay, compas_nam_cache_entry_t *nce)
 static void hopp_handle_nam(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
                             compas_nam_t *nam, uint8_t *src_addr, uint8_t src_addr_len)
 {
-    //DEBUG("hopp_handle_nam:");
     uint16_t offset = 0;
     compas_tlv_t *tlv = NULL;
 
@@ -327,7 +332,6 @@ static void hopp_handle_nam(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
             char name[COMPAS_NAME_LEN + 1];
             memcpy(name, cname.name, cname.name_len);
             name[cname.name_len] = '\0';
-            DEBUG("hopp_handle_nam: Handle NAM with name: %s\n", name);
             compas_nam_cache_entry_t *n = compas_nam_cache_find(dodag, &cname);
             if (!n) {
                 n = compas_nam_cache_add(dodag, &cname, &face);
@@ -364,7 +368,6 @@ static void hopp_handle_nam(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
                 }
             }
             if (n) {
-                DEBUG("hopp_handle_nam: Sending interest\n");
                 nce_times[n - dodag->nam_cache] = xtimer_now_usec();
                 hopp_request(relay, n);
 #if 0
@@ -429,7 +432,6 @@ static void hopp_dispatcher(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
 #ifdef MODULE_PKTCNT_FAST
             rx_sol++;
 #endif
-            DEBUG("hopp_dispatcher: got SOL\n");
             hopp_handle_sol(dodag, (compas_sol_t *) (data + 2),
                             src_addr, src_addr_len);
             break;
@@ -437,7 +439,6 @@ static void hopp_dispatcher(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
 #ifdef MODULE_PKTCNT_FAST
             rx_pam++;
 #endif
-            DEBUG("hopp_dispatcher: got PAM\n");
             hopp_handle_pam(relay, dodag, (compas_pam_t *) (data + 2),
                             src_addr, src_addr_len);
             break;
@@ -445,7 +446,6 @@ static void hopp_dispatcher(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
 #ifdef MODULE_PKTCNT_FAST
             rx_nam++;
 #endif
-            DEBUG("hopp_dispatcher: got NAM\n");
             hopp_handle_nam(relay, dodag, (compas_nam_t *) (data + 2),
                               src_addr, src_addr_len);
             break;
@@ -496,6 +496,7 @@ static int content_send(struct ccnl_relay_s *relay, struct ccnl_pkt_s *pkt)
         msg_t msg = { .type = HOPP_NAM_DEL_MSG, .content.ptr = n };
         msg_try_send(&msg, hopp_pid);
     }
+
     return 1;
 }
 
@@ -519,147 +520,197 @@ static inline void rd_entry_init(rd_entry_t *entry,
     entry->lifetime = lifetime;
 }
 
-/* 
-- t = type
-- t.r = register
-- t.u = update
-- t.d = delete
-- n = name
-- p = parameters
-
-[
-    {
-        "n": "room105-temperature",
-        "t": "temperature",
-        "lt": 60
-    }
-]
-*/
-
-static int encode_registration(rd_entry_t *entry, 
-                               uint8_t *output, size_t output_len) 
+static int print_entry(const rd_entry_t *entry) 
 {
-    CborEncoder encoder, mapEncoder;
-    cbor_encoder_init(&encoder, output, output_len, 0);
-    if (cbor_encoder_create_map(&encoder, &mapEncoder, 3) != CborNoError) {
-        return -1;
+    DEBUG("-------------\n");
+    DEBUG("\tName: %.*s\n", entry->name_len, entry->name);
+    DEBUG("\tType: %.*s\n", entry->type_len, entry->type);
+    DEBUG("\tLifetime: %llu\n", entry->lifetime);
+    DEBUG("-------------\n");
+    return 0;
+}
+
+static CborError encode_entry(CborEncoder *encoder, const rd_entry_t *entry) 
+{
+    CborEncoder mapEncoder;
+    CborError error;
+    error = cbor_encoder_create_map(encoder, &mapEncoder, 3);
+    if (error != CborNoError) {
+        DEBUG("encode_entry: error creating map\n");
+        return error;
     }
 
     // Name
-    if (cbor_encode_text_stringz(&mapEncoder, "n") != CborNoError) {
-        return -1;
+    error = cbor_encode_text_stringz(&mapEncoder, "n");
+    if (error != CborNoError) {
+        DEBUG("encode_entry: error encoding name key\n");
+        return error;
     }
-    if (cbor_encode_text_string(&mapEncoder, entry->name, entry->name_len) != CborNoError) {
-        return -1;
+    error = cbor_encode_text_string(&mapEncoder, entry->name, entry->name_len);
+    if (error != CborNoError) {
+        DEBUG("encode_entry: error encoding name value\n");
+        return error;
     }
 
     // Type
-    if (cbor_encode_text_stringz(&mapEncoder, "t") != CborNoError) {
-        return -1;
+    error = cbor_encode_text_stringz(&mapEncoder, "t");
+    if (error != CborNoError) {
+        DEBUG("encode_entry: error encoding type key\n");
+        return error;
     }
-    if (cbor_encode_text_string(&mapEncoder, entry->type, entry->type_len) != CborNoError) {
-        return -1;
+    error = cbor_encode_text_string(&mapEncoder, entry->type, entry->type_len);
+    if (error != CborNoError) {
+        DEBUG("encode_entry: error encoding type value\n");
+        return error;
     }
 
     // Lifetime
-    if (cbor_encode_text_stringz(&mapEncoder, "lt") != CborNoError) {
-        return -1;
+    error = cbor_encode_text_stringz(&mapEncoder, "lt");
+    if (error != CborNoError) {
+        DEBUG("encode_entry: error encoding lifetime key\n");
+        return error;
     }
-    if (cbor_encode_uint(&mapEncoder, entry->lifetime) != CborNoError) {
-        return -1;
+    error = cbor_encode_uint(&mapEncoder, entry->lifetime);
+    if (error != CborNoError) {
+        DEBUG("encode_entry: error encoding lifetime value\n");
+        return error;
     }
 
-    if (cbor_encoder_close_container(&encoder, &mapEncoder) != CborNoError) {
-        return -1;
+    error = cbor_encoder_close_container(encoder, &mapEncoder);
+    if (error != CborNoError) {
+        DEBUG("encode_entry: error closing map\n");
+        return error;
     }
-    return cbor_encoder_get_buffer_size(&encoder, output);
+    return CborNoError;
 }
 
-static int parse_registration(rd_entry_t *entry, 
-                              const uint8_t *content, size_t content_len) 
+static CborError parse_entry(const CborValue *map, rd_entry_t *entry) 
 {
-    char name[COMPAS_NAME_LEN];
-    size_t name_len = COMPAS_NAME_LEN;
-    char type[COMPAS_NAME_LEN];
-    size_t type_len = COMPAS_NAME_LEN; 
-    uint64_t lifetime;
+    if (!cbor_value_is_map(map)) {
+        DEBUG("parse_entry: error value is not map\n");
+        return -1;
+    }
 
-    CborParser parser;
-    CborValue value, containerValue;
-    if (cbor_parser_init(content, content_len, 0, &parser, &value) != CborNoError) {
-        DEBUG("parse_registration: error creating parser\n");
-        return -1;
-    }
-    if (!cbor_value_is_map(&value)) {
-        DEBUG("parse_registration: error value is not map\n");
-        return -1;
-    }
-    if (cbor_value_enter_container(&value, &containerValue) != CborNoError) {
-        DEBUG("parse_registration: error entering map\n");
-        return -1;
-    }
+    CborError error;
+    char name[COMPAS_NAME_LEN];
+    size_t name_len;
+    char type[COMPAS_NAME_LEN];
+    size_t type_len; 
+    uint64_t lifetime;
 
     // Name
     CborValue nameValue;
-    if (cbor_value_map_find_value(&value, "n", &nameValue) != CborNoError) {
-        DEBUG("parse_registration: error finding field n\n");
-        return -1;
+    error = cbor_value_map_find_value(map, "n", &nameValue);
+    if (error != CborNoError) {
+        DEBUG("parse_entry: error finding field n\n");
+        return error;
     }
     if (!cbor_value_is_text_string(&nameValue)) {
-        DEBUG("parse_registration: error field n is not text string\n");
-        return -1;
+        DEBUG("parse_entry: error field n is not text string\n");
+        return CborErrorImproperValue;
     }
-    if (cbor_value_get_string_length(&nameValue, &name_len) != CborNoError || type_len > COMPAS_NAME_LEN) {
-        DEBUG("parse_registration: error getting length of value of field n\n");
-        return -1;
+    error = cbor_value_get_string_length(&nameValue, &name_len); 
+    if (error != CborNoError) {
+        DEBUG("parse_entry: error getting length of value of field n\n");
+        return error;
     }
-    if (cbor_value_copy_text_string(&nameValue, name, &name_len, NULL)) {
-        DEBUG("parse_registration: error getting value of field n\n");
-        return -1;
+    if (name_len > COMPAS_NAME_LEN) {
+        DEBUG("parse_entry: error getting length of value of field n\n");
+        return CborErrorDataTooLarge;
+    }
+    error = cbor_value_copy_text_string(&nameValue, name, &name_len, NULL); 
+    if (error != CborNoError) {
+        DEBUG("parse_entry: error getting value of field n\n");
+        return error;
     }
 
     // Type
     CborValue typeValue;
-    if (cbor_value_map_find_value(&value, "t", &typeValue) != CborNoError) {
-        DEBUG("parse_registration: error finding field t\n");
-        return -1;
+    error = cbor_value_map_find_value(map, "t", &typeValue); 
+    if (error != CborNoError) {
+        DEBUG("parse_entry: error finding field t\n");
+        return error;
     }
     if (!cbor_value_is_text_string(&typeValue)) {
-        DEBUG("parse_registration: error field t is not text string\n");
-        return -1;
+        DEBUG("parse_entry: error field t is not text string\n");
+        return CborErrorImproperValue;
     }
-    if (cbor_value_get_string_length(&typeValue, &type_len) != CborNoError || type_len > COMPAS_NAME_LEN) {
-        DEBUG("parse_registration: error getting length of value of field t\n");
-        return -1;
+    error = cbor_value_get_string_length(&typeValue, &type_len); 
+    if (error != CborNoError) {
+        DEBUG("parse_entry: error getting length of value of field t\n");
+        return error;
     }
-    if (cbor_value_copy_text_string(&typeValue, type, &type_len, NULL)) {
-        DEBUG("parse_registration: error getting value of field t\n");
-        return -1;
+    if (type_len > COMPAS_NAME_LEN) {
+        DEBUG("parse_entry: error getting length of value of field t\n");
+        return CborErrorDataTooLarge;
+    }
+    error = cbor_value_copy_text_string(&typeValue, type, &type_len, NULL); 
+    if (error != CborNoError) {
+        DEBUG("parse_entry: error getting value of field t\n");
+        return error;
     }
 
     // Lifetime
     CborValue lifetimeValue;
-    if (cbor_value_map_find_value(&value, "lt", &lifetimeValue) != CborNoError) {
-        DEBUG("parse_registration: error finding field lt \n");
-        return -1;
+    error = cbor_value_map_find_value(map, "lt", &lifetimeValue); 
+    if (error != CborNoError) {
+        DEBUG("parse_entry: error finding field lt \n");
+        return error;
     }
     if (!cbor_value_is_unsigned_integer(&lifetimeValue)) {
-        DEBUG("parse_registration: error field lt is not unsigned integer\n");
-        return -1;
+        DEBUG("parse_entry: error field lt is not unsigned integer\n");
+        return CborErrorImproperValue;
     }
-    if (cbor_value_get_uint64(&lifetimeValue, &lifetime) != CborNoError) {
-        DEBUG("parse_registration: error gettings value of field lt\n");
-        return -1;
+    error = cbor_value_get_uint64(&lifetimeValue, &lifetime); 
+    if (error != CborNoError) {
+        DEBUG("parse_entry: error gettings value of field lt\n");
+        return error;
     }
-
-    /*
-    if (cbor_value_leave_container(&value, &containerValue) != CborNoError) {
-        return -1;
-    }
-    DEBUG("Lifetime: %llu\n", lifetime);
-    */
 
     rd_entry_init(entry, name, name_len, type, type_len, lifetime);
+    return CborNoError;
+}
+
+static int parse_entries(const uint8_t *content, size_t content_len,
+                         int(*entry_callback)(const rd_entry_t *)) 
+{
+    CborParser parser;
+    CborValue array, map;
+    if (cbor_parser_init(content, content_len, 0, &parser, &array) != CborNoError) {
+        DEBUG("parse_registration: error creating parser\n");
+        return -1;
+    }
+    if (!cbor_value_is_array(&array)) {
+        DEBUG("parse_registration: error value is not array\n");
+        return -1;
+    }
+    if (cbor_value_enter_container(&array, &map) != CborNoError) {
+        DEBUG("parse_registration: error entering array\n");
+        return -1;
+    }
+
+    while (!cbor_value_at_end(&map)) {
+        rd_entry_t entry;
+        if (parse_entry(&map, &entry) != CborNoError) {
+            return -1;
+        }
+
+        int callback_result = entry_callback(&entry);
+        if (callback_result != 0) {
+            return callback_result;
+        }
+
+        if (cbor_value_advance(&map) != CborNoError) {
+            DEBUG("parse_registration: error advancing the array\n");
+            return -1;
+        }
+    }
+    
+    if (cbor_value_leave_container(&array, &map) != CborNoError) {
+        DEBUG("parse_registration: error leaving array\n");
+        return -1;
+    }
+
     return 0;
 }
 
@@ -667,40 +718,115 @@ static int parse_registration(rd_entry_t *entry,
 
 static rd_entry_t registered_content[REGISTERED_CONTENT_COUNT];
 
-static int rd_register_content(const char *registercontent, size_t registercontent_len) {
-    DEBUG("rd_register_content: parsing request now\n");
+static int rd_register_entry(const rd_entry_t *entry) 
+{
+    DEBUG("rd_register_entry: Trying to register entry:\n");
+    print_entry(entry);
 
-    rd_entry_t entry;
-    if (parse_registration(&entry, (const uint8_t *)registercontent, registercontent_len) != 0)
-        return -1;
-
-    DEBUG("rd_register_content: parsed request successfully\n");
-    DEBUG("Name: %.*s\n", entry.name_len, entry.name);
-    DEBUG("Type: %.*s\n", entry.type_len, entry.type);
-    DEBUG("Lifetime: %llu\n", entry.lifetime);
-
-    for (int i = 0; i < REGISTERED_CONTENT_COUNT; i++) {
-        if (registered_content[i].lifetime > 0) {
+    for (int j = 0; j < REGISTERED_CONTENT_COUNT; j++) {
+        if (registered_content[j].lifetime > 0) {
             continue;
         }
-        registered_content[i] = entry;
-        DEBUG("rd_register_content: content was registered at index %u\n", i);
+        registered_content[j] = *entry;
+        DEBUG("rd_register_content: content was registered at index %u\n", j);
         return 0;
     }
-    
     DEBUG("rd_register_content: Content could not be registered, no available space left.\n");
     return -1;
 }
+
+static int rd_register_content(const uint8_t *registercontent, size_t registercontent_len) 
+{
+    if (parse_entries(registercontent, registercontent_len, rd_register_entry) != 0) {
+        DEBUG("rd_register_content: parsing failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int rd_lookup_registered_content(const char *contenttype, size_t contenttype_len,
+                                        uint8_t *response, size_t *response_len)
+{
+    DEBUG("rd_lookup_registered_content: searching registered content with type: %.*s\n", contenttype_len, contenttype);
+
+    CborEncoder encoder, arrayEncoder;
+    cbor_encoder_init(&encoder, response, *response_len, 0);
+    if (cbor_encoder_create_array(&encoder, &arrayEncoder, 1) != CborNoError) {
+        DEBUG("rd_lookup_registered_content: creating array failed\n");
+        return -1;
+    }
+
+    for (int i = 0; i < REGISTERED_CONTENT_COUNT; i++) {
+        rd_entry_t entry = registered_content[i];
+        if (entry.lifetime <= 0) {
+            continue;
+        }
+        if (entry.type_len != contenttype_len) {
+            continue;
+        }
+        if (strncmp(entry.type, contenttype, contenttype_len != 0)) {
+            continue;
+        }
+
+        DEBUG("rd_lookup_registered_content: found matching content with name: %.*s\n", entry.name_len, entry.name);
+        if (encode_entry(&arrayEncoder, &entry) != CborNoError) {
+            DEBUG("rd_lookup_registered_content: Encoding entry failed\n");
+            return -1;
+        } 
+    }
+
+    if (cbor_encoder_close_container(&encoder, &arrayEncoder) != CborNoError) {
+        DEBUG("rd_lookup_registered_content: Closing array failed\n");
+        return -1;
+    }
+
+    DEBUG("rd_lookup_registered_content: done searching.\n");
+
+    *response_len = cbor_encoder_get_buffer_size(&encoder, response);
+    DEBUG("rd_lookup_registered_content: length of encoded message: %u\n", *response_len);
+    return 0;
+}
+
+#define RD_REGISTER_PREFIX "/rd/register/"
+#define RD_REGISTER_PREFIX_LEN 13
+
+#define RD_LOOKUP_PREFIX "/rd/lookup/"
+#define RD_LOOKUP_PREFIX_LEN 11
 
 static int content_requested(struct ccnl_relay_s *relay, struct ccnl_pkt_s *p,
                              struct ccnl_face_s *from)
 {
     (void) relay;
     (void) from;
-    char *s = ccnl_prefix_to_path(p->pfx);
+    char *content_name = ccnl_prefix_to_path(p->pfx);
+    size_t content_name_len = strlen(content_name);
+
+    if (content_name_len > RD_LOOKUP_PREFIX_LEN 
+    &&  strncmp(content_name, RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN) == 0) {
+        // is lookup response
+        DEBUG("content_requested: got lookup response\n");
+        
+        msg_t msg = { .content.ptr = p, .type = LOOKUP_RESPONSE };
+        if (msg_send(&msg, lookup_pid) != 1) {
+            DEBUG("content_requested: sending msg to lookup thread failed\n");
+        }
+        ccnl_free(content_name);
+        return 1;
+    }
+
+    if (content_name_len > RD_REGISTER_PREFIX_LEN 
+    &&  strncmp(content_name, RD_REGISTER_PREFIX, RD_REGISTER_PREFIX_LEN) == 0
+    &&  dodag.rank == COMPAS_DODAG_ROOT_RANK) {
+        // is register request
+        DEBUG("content_requested: got register request:\n");
+        
+        rd_register_content((const uint8_t *)p->content, p->contlen);
+        ccnl_free(content_name);
+        return 1;
+    }
 
     compas_name_t cname;
-    compas_name_init(&cname, s, strlen(s));
+    compas_name_init(&cname, content_name, content_name_len);
     DEBUG("content_requested: got content with name: %.*s\n", cname.name_len, cname.name);
     compas_nam_cache_entry_t *n = compas_nam_cache_find(&dodag, &cname);
 
@@ -711,25 +837,75 @@ static int content_requested(struct ccnl_relay_s *relay, struct ccnl_pkt_s *p,
 
         msg_t msg = { .content.ptr = n };
         if ((dodag.rank == COMPAS_DODAG_ROOT_RANK)) {
-            DEBUG("content_requested: is root, will process as RD\n");
-            
-            rd_register_content((const char *)p->content, p->contlen);
-
             msg.type = HOPP_NAM_DEL_MSG;
         }
         else {
-            DEBUG("Content requested: is not root\n");
             n->flags |= COMPAS_NAM_CACHE_FLAGS_REQUESTED;
             n->retries = COMPAS_NAM_CACHE_RETRIES;
             msg.type = HOPP_NAM_MSG;
         }
         msg_try_send(&msg, hopp_pid);
-    } else {
-        DEBUG("content_requested: corresponding NAM not found in cache\n");
     }
 
-    ccnl_free(s);
+    ccnl_free(content_name);
     return 1;
+}
+
+static int interest_received(struct ccnl_relay_s *relay,
+                             struct ccnl_face_s *from,
+                             struct ccnl_pkt_s *pkt)
+{
+    // get name from interest and check if it starts with /rd/lookup/
+    char *interest_name = ccnl_prefix_to_path(pkt->pfx);
+    size_t interest_name_len = strlen(interest_name);
+    if (interest_name_len <= RD_LOOKUP_PREFIX_LEN 
+    || strncmp(interest_name, RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN))
+        return 0; // interest not handled
+    
+    if (dodag.rank != COMPAS_DODAG_ROOT_RANK) {
+        DEBUG("interest_received: is lookup request but this node is not root\n");
+        return 0; // interest not handled
+    }
+    DEBUG("interest_received: is lookup request and node is root, will respond as RD\n");
+
+    // build response 
+
+    char *query = interest_name + RD_LOOKUP_PREFIX_LEN;
+    DEBUG("interest_received: query: %s\n", query);
+
+    uint8_t payload[256];
+    size_t payload_len = sizeof(payload);
+    int lookup_result = rd_lookup_registered_content(query, strlen(query), payload, &payload_len);
+    if (lookup_result) {
+        DEBUG("interest_received: failed to build response message\n");
+        return 0; // interest not handled
+    }
+
+    ccnl_free(interest_name);
+
+    // send response
+
+    int offs = CCNL_MAX_PACKET_SIZE;
+    int content_len = ccnl_ndntlv_prependContent(pkt->pfx, (unsigned char*) payload, payload_len, NULL, NULL, &offs, _out);
+    if (content_len < 0) {
+        DEBUG("interest_received: Error, content length: %u\n", content_len);
+        return 0; // interest not handled
+    }
+    unsigned char *olddata;
+    unsigned char *data = olddata = _out + offs;
+    int len;
+    unsigned type;
+    if (ccnl_ndntlv_dehead(&data, &content_len, (int*) &type, &len) ||
+        type != NDN_TLV_Data) {
+        DEBUG("interest_received: ccnl_ndntlv_dehead\n");
+        return 0; // interest not handled
+    }
+    struct ccnl_pkt_s *response_pkt = ccnl_ndntlv_bytes2pkt(type, olddata, &data, &content_len);
+    int send_response_result = ccnl_send_pkt(relay, from, response_pkt);
+    if (send_response_result)
+        DEBUG("interest_received: send response failed with code: %i\n", send_response_result);
+
+    return 1; // interest handled
 }
 
 void *hopp(void *arg)
@@ -762,7 +938,6 @@ void *hopp(void *arg)
 
         switch (msg.type) {
             case HOPP_SOL_MSG:
-                DEBUG("hopp: will send HOPP_SOL_MSG\n");
                 if ((dodag.rank != COMPAS_DODAG_ROOT_RANK) &&
                     (dodag.rank == COMPAS_DODAG_UNDEF || !dodag.parent.alive)) {
                     hopp_send_sol(&dodag, false);
@@ -779,7 +954,6 @@ void *hopp(void *arg)
                 }
                 break;
             case HOPP_PAM_MSG:
-                DEBUG("hopp: will send HOPP_PAM_MSG\n");
                 if (dodag.rank != COMPAS_DODAG_UNDEF) {
                     hopp_send_pam(&dodag, NULL, 0, true);
                     uint64_t trickle_int = trickle_next(&dodag.trickle);
@@ -789,7 +963,6 @@ void *hopp(void *arg)
                 }
                 break;
             case HOPP_NAM_MSG:
-                DEBUG("hopp: will send HOPP_NAM_MSG\n");
                 nce = (compas_nam_cache_entry_t *) msg.content.ptr;
                 pos = nce - dodag.nam_cache;
                 evtimer_del(&evtimer, (evtimer_event_t *)&nam_msg_evts[pos]);
@@ -805,21 +978,18 @@ void *hopp(void *arg)
 
                 break;
             case HOPP_NAM_DEL_MSG:
-                DEBUG("hopp: will send HOPP_NAM_DEL_MSG\n");
                 nce = (compas_nam_cache_entry_t *) msg.content.ptr;
                 hopp_nce_del(&dodag, nce);
                 break;
             case HOPP_PARENT_TIMEOUT_MSG:
-                DEBUG("hopp: will send HOPP_PARENT_TIMEOUT_MSG\n");
                 hopp_parent_timeout(&dodag);
                 break;
             case HOPP_STOP_MSG:
-                DEBUG("hopp: will send HOPP_STOP_MSG\n");
+                ccnl_set_local_producer(NULL);
                 ccnl_callback_set_data_send(NULL);
                 ccnl_callback_set_data_received(NULL);
                 return NULL;
             case GNRC_NETAPI_MSG_TYPE_RCV:
-                DEBUG("hopp: will send GNRC_NETAPI_MSG_TYPE_RCV\n");
                 pkt = (gnrc_pktsnip_t *) msg.content.ptr;
                 netif_snip = gnrc_pktsnip_search_type(pkt, GNRC_NETTYPE_NETIF);
                 if (netif_snip) {
@@ -856,11 +1026,9 @@ bool hopp_publish_content(const char *name, size_t name_len,
 {
     static compas_name_t cname;
     compas_name_init(&cname, name, name_len);
-    DEBUG("hopp_publish_content: publish content with name: %.*s\n", cname.name_len, cname.name);
 
     compas_nam_cache_entry_t *nce = compas_nam_cache_add(&dodag, &cname, NULL);
     if (nce) {
-        DEBUG("hopp_publish_content: Adding name cache entry was successfull\n");
         nce->flags |= COMPAS_NAM_CACHE_FLAGS_REQUESTED;
         static char prefix_n[COMPAS_NAME_LEN + 1];
         memcpy(prefix_n, cname.name, cname.name_len);
@@ -892,8 +1060,6 @@ bool hopp_publish_content(const char *name, size_t name_len,
         msg_try_send(&msg, hopp_pid);
 
         return true;
-    } else {
-        DEBUG("hopp_publish_content: Adding name cache entry failed\n");
     }
 
     return false;
@@ -903,39 +1069,6 @@ bool rd_register(const char *name, size_t name_len,
                  const char *contenttype, size_t contenttype_len,
                  uint64_t lifetime)
 {
-    /*
-    uint8_t buf[256];
-    int buf_len = sizeof(buf);
-
-    rd_entry_t testEntry;
-    rd_entry_init(&testEntry, name, name_len, contenttype, contenttype_len, lifetime);
-
-    DEBUG("Encoding request now\n");
-
-    buf_len = encode_registration(&testEntry, buf, buf_len);
-    if (buf_len < 0) {
-        DEBUG("Encode failed\n");
-        return false;
-    }
-
-    DEBUG("Encoding finished. Length of output: %u\n", buf_len);
-
-    DEBUG("Parsing output now\n");
-
-    rd_entry_t testEntryParsed;
-    if (0 != parse_registration(&testEntryParsed, buf, buf_len)) {
-        DEBUG("Parse failed\n");
-        return false;;
-    }
-
-    DEBUG("Parsing finished.");
-    DEBUG("Name of parsed request: %.*s\n", testEntryParsed.name_len, testEntryParsed.name);
-    DEBUG("Type of parsed request: %.*s\n", testEntryParsed.type_len, testEntryParsed.type);
-    DEBUG("Lifetime of parsed request: %llu\n", testEntryParsed.lifetime);
-    return false;
-*/
-
-
     if (name_len <= 0 || contenttype_len <= 0 || lifetime <= 0) {
         return false;
     }
@@ -946,11 +1079,27 @@ bool rd_register(const char *name, size_t name_len,
     rd_entry_init(&entry, name, name_len, contenttype, contenttype_len, lifetime);
 
     uint8_t encoded[128];
-    int encoded_len = encode_registration(&entry, encoded, sizeof(encoded));
-    if (encoded_len < 0) {
-        DEBUG("rd_register: Encoding register message failed\n");
+    size_t encoded_len = sizeof(encoded);
+
+    CborEncoder encoder, arrayEncoder;
+    cbor_encoder_init(&encoder, encoded, encoded_len, 0);
+    if (cbor_encoder_create_array(&encoder, &arrayEncoder, 1) != CborNoError) {
+        DEBUG("rd_register: creating array failed\n");
         return false;
     }
+
+    if (encode_entry(&arrayEncoder, &entry) != CborNoError) {
+        DEBUG("rd_register: Encoding entry failed\n");
+        return false;
+    } 
+    
+    if (cbor_encoder_close_container(&encoder, &arrayEncoder) != CborNoError) {
+        DEBUG("rd_register: Closing array failed\n");
+        return false;
+    }
+
+    encoded_len = cbor_encoder_get_buffer_size(&encoder, encoded);
+    DEBUG("rd_register: length of encoded message: %u\n", encoded_len);
 
     // build message name
 
@@ -958,11 +1107,11 @@ bool rd_register(const char *name, size_t name_len,
     sha256(encoded, (size_t)encoded_len, hash);
 
     char register_message_name[64];
-    size_t register_message_name_len = sizeof(register_message_name)-4;
-    strcpy(register_message_name, "/rd/");
-    if (!b58enc(&register_message_name[4], &register_message_name_len, hash, 32))
+    size_t register_message_name_len = sizeof(register_message_name)-RD_REGISTER_PREFIX_LEN;
+    strcpy(register_message_name, RD_REGISTER_PREFIX);
+    if (!b58enc(&register_message_name[RD_REGISTER_PREFIX_LEN], &register_message_name_len, hash, 32))
     {
-        puts("rd_register: ERROR, b58enc failed.\n");
+        DEBUG("rd_register: ERROR, b58enc failed.\n");
         return false;
     }
     register_message_name[32] = 0;
@@ -972,13 +1121,73 @@ bool rd_register(const char *name, size_t name_len,
     return hopp_publish_content(register_message_name, strlen(register_message_name), (unsigned char*) encoded, encoded_len);
 }
 
+#define BUF_SIZE (100)
+static unsigned char _int_buf[BUF_SIZE];
 
-bool rd_lookup(const char *contenttype, size_t contenttype_len)
+void *lookup(void *arg)
 {
-    // TODO: do lookup
-    if (contenttype_len > 0) {
-        printf("%s", contenttype);
+    (void)arg;
+    msg_init_queue(lookup_q, LOOKUP_QSZ);
+    ccnl_set_local_producer(interest_received);
+
+    msg_t msg;
+    while (1) {
+        msg_receive(&msg);
+        DEBUG("lookup: received msg\n");
+
+        char *prefix;
+        struct ccnl_prefix_s *prefix_ccnl;
+
+        struct ccnl_pkt_s *pkt;
+        uint8_t *response;
+        size_t response_len;
+
+        switch (msg.type) {
+            case LOOKUP_REQUEST:
+                prefix = (char *) msg.content.ptr;
+                DEBUG("lookup: sending interest with name: %s\n", prefix);
+
+                prefix_ccnl = ccnl_URItoPrefix(prefix, CCNL_SUITE_NDNTLV, NULL, 0);
+                memset(_int_buf, '\0', BUF_SIZE);
+                
+                if (ccnl_send_interest(prefix_ccnl, _int_buf, BUF_SIZE, NULL, NULL) != 0) {
+                    DEBUG("lookup: sending interest failed\n");
+                }
+                ccnl_prefix_free(prefix_ccnl);
+                
+                break;
+            case LOOKUP_RESPONSE:
+                pkt = (struct ccnl_pkt_s *)msg.content.ptr;
+                response = (uint8_t *)pkt->content;
+                response_len = (size_t)pkt->contlen;
+
+                if (parse_entries(response, response_len, print_entry) != 0) {
+                    DEBUG("lookup: parsing lookup response failed\n");
+                    break;
+                }
+                break;
+            default: break;
+        }
     }
 
-    return false;
+    return NULL;
+}
+
+bool rd_lookup(const char *contenttype, size_t contenttype_len)
+{   
+    // send interest
+
+    char prefix[65];
+    memset(prefix, 0, sizeof(prefix));
+
+    strcpy(prefix, RD_LOOKUP_PREFIX);
+    strncpy(&prefix[RD_LOOKUP_PREFIX_LEN], contenttype, contenttype_len);
+    prefix[32] = 0;
+    
+    msg_t msg = { .content.ptr = &prefix, .type = LOOKUP_REQUEST };
+    if (msg_send(&msg, lookup_pid) != 1) {
+        DEBUG("content_requested: sending msg to lookup thread failed\n");
+    }
+
+    return true;
 }

@@ -37,8 +37,15 @@ static int _root(int argc, char **argv)
         hopp_root_start((const char *)argv[1], strlen(argv[1]));
     }
     else {
-        puts("error");
-        return -1;
+        //puts("error");
+        //return -1;
+
+        char *root_name = "/rd";
+
+        printf("starting root with default arguments:\n");
+        printf("prefix: %s\n", root_name);
+
+        hopp_root_start(root_name, strlen(root_name));
     }
     return 0;
 }
@@ -90,13 +97,13 @@ static int _register(int argc, char **argv)
         printf("contenttype: %s\n", contenttype);
         printf("lifetime: %llu\n", lifetime);
 
-        if (rd_register((const char *)name, strlen(name),
-                        (const char *)contenttype, strlen(contenttype),
+        if (rd_register(name, strlen(name),
+                        contenttype, strlen(contenttype),
                         lifetime)) {
             return 0;
         }
 
-        printf("Publish failed\n");
+        printf("Registering failed\n");
         return -1;
     }
 
@@ -110,7 +117,19 @@ static int _register(int argc, char **argv)
 static int _lookup(int argc, char **argv)
 {
     if (argc != 2) {
-        printf("usage: %s <contenttype>\n", argv[0]);
+        //printf("usage: %s <contenttype>\n", argv[0]);
+        //return -1;
+
+        char *contenttype = "temperature";
+
+        printf("lookup with default arguments:\n");
+        printf("contenttype: %s\n", contenttype);
+
+        if (rd_lookup(contenttype, strlen(contenttype))) {
+            return 0;
+        }
+
+        printf("Lookup failed\n");
         return -1;
     }
     
@@ -120,7 +139,7 @@ static int _lookup(int argc, char **argv)
 }
 
 static const shell_command_t shell_commands[] = {
-    { "hr", "start HoPP root with the given prefix", _root },
+    { "hr", "start HoPP root", _root },
     { "hp", "publish data with the given name", _publish },
     { "rdr", "register a resource: rdr <name> <contenttype> <lifetime>", _register },
     { "rdl", "lookup resources: rdl <contenttype>", _lookup },
@@ -166,6 +185,12 @@ int main(void)
                              "hopp");
 
     if (hopp_pid <= KERNEL_PID_UNDEF) {
+        return 1;
+    }
+
+    lookup_pid = thread_create(lookup_stack, sizeof(lookup_stack), THREAD_PRIORITY_MAIN - 1, THREAD_CREATE_STACKTEST, lookup, NULL, "lookup");
+    if (lookup_pid <= KERNEL_PID_UNDEF) {
+        printf("creating lookup thread failed.");
         return 1;
     }
 

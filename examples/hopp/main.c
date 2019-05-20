@@ -37,15 +37,8 @@ static int _root(int argc, char **argv)
         hopp_root_start((const char *)argv[1], strlen(argv[1]));
     }
     else {
-        //puts("error");
-        //return -1;
-
-        char *root_name = "/rd";
-
-        printf("starting root with default arguments:\n");
-        printf("prefix: %s\n", root_name);
-
-        hopp_root_start(root_name, strlen(root_name));
+        puts("error");
+        return -1;
     }
     return 0;
 }
@@ -82,13 +75,38 @@ static int _publish(int argc, char **argv)
     return 0;
 }
 
+static char *rand_string(char *str, size_t size)
+{
+    const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ12345667890";
+    if (size) {
+        --size;
+        for (size_t n = 0; n < size; n++) {
+            int key = random_uint32_range(0, (sizeof charset - 1));
+            str[n] = charset[key];
+        }
+        str[size] = '\0';
+    }
+    return str;
+}
+
+static int _rd(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    char *root_name = RD_PREFIX;
+    printf("starting rd with prefix: %s\n", root_name);
+    hopp_root_start(root_name, RD_PREFIX_LEN);
+    return 0;
+}
+
 static int _register(int argc, char **argv)
 {
     if (argc != 4) {
         //printf("usage: %s <name> <contenttype> <lifetime>\n", argv[0]);
         //return -1;
 
-        char *name = "room105-temperature";
+        char name[10];
+        rand_string(name, sizeof(name));
         char *contenttype = "temperature";
         uint64_t lifetime = 90;
 
@@ -133,7 +151,7 @@ static int _lookup(int argc, char **argv)
         return -1;
     }
     
-    rd_lookup((const char *)argv[1], strlen(argv[1]));
+    rd_lookup(argv[1], strlen(argv[1]));
     
     return 0;
 }
@@ -141,6 +159,7 @@ static int _lookup(int argc, char **argv)
 static const shell_command_t shell_commands[] = {
     { "hr", "start HoPP root", _root },
     { "hp", "publish data with the given name", _publish },
+    { "rd", "start RD", _rd },
     { "rdr", "register a resource: rdr <name> <contenttype> <lifetime>", _register },
     { "rdl", "lookup resources: rdl <contenttype>", _lookup },
     { NULL, NULL, NULL }
@@ -188,9 +207,8 @@ int main(void)
         return 1;
     }
 
-    lookup_pid = thread_create(lookup_stack, sizeof(lookup_stack), THREAD_PRIORITY_MAIN - 1, THREAD_CREATE_STACKTEST, lookup, NULL, "lookup");
-    if (lookup_pid <= KERNEL_PID_UNDEF) {
-        printf("creating lookup thread failed.");
+    rd_pid = thread_create(rd_stack, sizeof(rd_stack), THREAD_PRIORITY_MAIN - 1, THREAD_CREATE_STACKTEST, rd, NULL, "rd");
+    if (rd_pid <= KERNEL_PID_UNDEF) {
         return 1;
     }
 

@@ -31,8 +31,9 @@
 #include "libbase58.h"
 #include "cbor.h"
 #include "thread.h"
+#include "random.h"
+#include "mutex.h"
 #define ENABLE_DEBUG    (1)
-//#include "debug.h"
 
 #ifdef MODULE_PKTCNT_FAST
 #include "pktcnt.h"
@@ -61,10 +62,44 @@ static evtimer_msg_event_t nam_msg_evts[COMPAS_NAM_CACHE_LEN];
 
 static hopp_cb_published cb_published = NULL;
 
+char rd_stack[RD_STACKSZ];
+kernel_pid_t rd_pid;
+static msg_t rd_q[RD_QSZ];
+static unsigned char _lookup_int_buf[HOPP_INTEREST_BUFSIZE];
+static rd_entry_t _registered_content[REGISTERED_CONTENT_COUNT];
+static mutex_t _registered_content_mutex = MUTEX_INIT;
+static rd_lookup_msg_t _rd_lookup_msg_pool[RD_MSG_POOL_SIZE];
+static mutex_t _rd_lookup_msg_pool_mutex = MUTEX_INIT;
 
-char lookup_stack[THREAD_STACKSIZE_DEFAULT];
-kernel_pid_t lookup_pid;
-static msg_t lookup_q[LOOKUP_QSZ];
+static rd_lookup_msg_t *rd_lookup_msg_get_free_entry(void) 
+{
+    mutex_lock(&_rd_lookup_msg_pool_mutex);
+    for (unsigned i = 0; i < RD_MSG_POOL_SIZE; i++) {
+        if (_rd_lookup_msg_pool[i].contenttype_len == 0)
+            return &_rd_lookup_msg_pool[i];
+    }
+    mutex_unlock(&_rd_lookup_msg_pool_mutex);
+    return NULL;
+}
+
+static hopp_data_received_func _data_received_func = NULL;
+
+void
+hopp_callback_set_data_received(hopp_data_received_func func)
+{
+    _data_received_func = func;
+}
+
+int
+hopp_callback_data_received(struct ccnl_relay_s *relay, struct ccnl_pkt_s *pkt,
+                            struct ccnl_face_s *from)
+{
+    if (_data_received_func) {
+        return _data_received_func(relay, pkt, from);
+    }
+
+    return 1;
+}
 
 void hopp_set_cb_published(hopp_cb_published cb)
 {
@@ -500,14 +535,6 @@ static int content_send(struct ccnl_relay_s *relay, struct ccnl_pkt_s *pkt)
     return 1;
 }
 
-typedef struct __attribute__((packed)) {
-    char name[COMPAS_NAME_LEN];     /**< Name */
-    size_t name_len;                /**< Length of a name */
-    char type[COMPAS_NAME_LEN];     /**< Content-Type */
-    size_t type_len;                /**< Length of the content type */
-    uint64_t lifetime;              /**< Lifetime */
-} rd_entry_t;
-
 static inline void rd_entry_init(rd_entry_t *entry,
                                  const char *name, size_t name_len,
                                  const char *type, size_t type_len, 
@@ -522,11 +549,11 @@ static inline void rd_entry_init(rd_entry_t *entry,
 
 static int print_entry(const rd_entry_t *entry) 
 {
-    DEBUG("-------------\n");
-    DEBUG("\tName: %.*s\n", entry->name_len, entry->name);
-    DEBUG("\tType: %.*s\n", entry->type_len, entry->type);
-    DEBUG("\tLifetime: %llu\n", entry->lifetime);
-    DEBUG("-------------\n");
+    printf("-------------\n");
+    printf("\tName: %.*s\n", entry->name_len, entry->name);
+    printf("\tType: %.*s\n", entry->type_len, entry->type);
+    printf("\tLifetime: %llu\n", entry->lifetime);
+    printf("-------------\n");
     return 0;
 }
 
@@ -692,6 +719,7 @@ static int parse_entries(const uint8_t *content, size_t content_len,
     while (!cbor_value_at_end(&map)) {
         rd_entry_t entry;
         if (parse_entry(&map, &entry) != CborNoError) {
+            DEBUG("parse_registration: parsing entry failed\n");
             return -1;
         }
 
@@ -714,116 +742,23 @@ static int parse_entries(const uint8_t *content, size_t content_len,
     return 0;
 }
 
-#define REGISTERED_CONTENT_COUNT (100)
-
-static rd_entry_t registered_content[REGISTERED_CONTENT_COUNT];
-
-static int rd_register_entry(const rd_entry_t *entry) 
-{
-    DEBUG("rd_register_entry: Trying to register entry:\n");
-    print_entry(entry);
-
-    for (int j = 0; j < REGISTERED_CONTENT_COUNT; j++) {
-        if (registered_content[j].lifetime > 0) {
-            continue;
-        }
-        registered_content[j] = *entry;
-        DEBUG("rd_register_content: content was registered at index %u\n", j);
-        return 0;
-    }
-    DEBUG("rd_register_content: Content could not be registered, no available space left.\n");
-    return -1;
-}
-
-static int rd_register_content(const uint8_t *registercontent, size_t registercontent_len) 
-{
-    if (parse_entries(registercontent, registercontent_len, rd_register_entry) != 0) {
-        DEBUG("rd_register_content: parsing failed\n");
-        return -1;
-    }
-    return 0;
-}
-
-static int rd_lookup_registered_content(const char *contenttype, size_t contenttype_len,
-                                        uint8_t *response, size_t *response_len)
-{
-    DEBUG("rd_lookup_registered_content: searching registered content with type: %.*s\n", contenttype_len, contenttype);
-
-    CborEncoder encoder, arrayEncoder;
-    cbor_encoder_init(&encoder, response, *response_len, 0);
-    if (cbor_encoder_create_array(&encoder, &arrayEncoder, 1) != CborNoError) {
-        DEBUG("rd_lookup_registered_content: creating array failed\n");
-        return -1;
-    }
-
-    for (int i = 0; i < REGISTERED_CONTENT_COUNT; i++) {
-        rd_entry_t entry = registered_content[i];
-        if (entry.lifetime <= 0) {
-            continue;
-        }
-        if (entry.type_len != contenttype_len) {
-            continue;
-        }
-        if (strncmp(entry.type, contenttype, contenttype_len != 0)) {
-            continue;
-        }
-
-        DEBUG("rd_lookup_registered_content: found matching content with name: %.*s\n", entry.name_len, entry.name);
-        if (encode_entry(&arrayEncoder, &entry) != CborNoError) {
-            DEBUG("rd_lookup_registered_content: Encoding entry failed\n");
-            return -1;
-        } 
-    }
-
-    if (cbor_encoder_close_container(&encoder, &arrayEncoder) != CborNoError) {
-        DEBUG("rd_lookup_registered_content: Closing array failed\n");
-        return -1;
-    }
-
-    DEBUG("rd_lookup_registered_content: done searching.\n");
-
-    *response_len = cbor_encoder_get_buffer_size(&encoder, response);
-    DEBUG("rd_lookup_registered_content: length of encoded message: %u\n", *response_len);
-    return 0;
-}
-
-#define RD_REGISTER_PREFIX "/rd/register/"
-#define RD_REGISTER_PREFIX_LEN 13
-
-#define RD_LOOKUP_PREFIX "/rd/lookup/"
-#define RD_LOOKUP_PREFIX_LEN 11
-
 static int content_requested(struct ccnl_relay_s *relay, struct ccnl_pkt_s *p,
                              struct ccnl_face_s *from)
 {
     (void) relay;
     (void) from;
+
+    int cb_res = hopp_callback_data_received(relay, p, from);
+    if (cb_res)
+        return cb_res; // handled
+
     char *content_name = ccnl_prefix_to_path(p->pfx);
+    if (content_name == NULL)
+    {
+        DEBUG("content_requested: content name is null\n");
+        return 0; // not handled
+    }
     size_t content_name_len = strlen(content_name);
-
-    if (content_name_len > RD_LOOKUP_PREFIX_LEN 
-    &&  strncmp(content_name, RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN) == 0) {
-        // is lookup response
-        DEBUG("content_requested: got lookup response\n");
-        
-        msg_t msg = { .content.ptr = p, .type = LOOKUP_RESPONSE };
-        if (msg_send(&msg, lookup_pid) != 1) {
-            DEBUG("content_requested: sending msg to lookup thread failed\n");
-        }
-        ccnl_free(content_name);
-        return 1;
-    }
-
-    if (content_name_len > RD_REGISTER_PREFIX_LEN 
-    &&  strncmp(content_name, RD_REGISTER_PREFIX, RD_REGISTER_PREFIX_LEN) == 0
-    &&  dodag.rank == COMPAS_DODAG_ROOT_RANK) {
-        // is register request
-        DEBUG("content_requested: got register request:\n");
-        
-        rd_register_content((const uint8_t *)p->content, p->contlen);
-        ccnl_free(content_name);
-        return 1;
-    }
 
     compas_name_t cname;
     compas_name_init(&cname, content_name, content_name_len);
@@ -855,57 +790,38 @@ static int interest_received(struct ccnl_relay_s *relay,
                              struct ccnl_face_s *from,
                              struct ccnl_pkt_s *pkt)
 {
-    // get name from interest and check if it starts with /rd/lookup/
-    char *interest_name = ccnl_prefix_to_path(pkt->pfx);
-    size_t interest_name_len = strlen(interest_name);
-    if (interest_name_len <= RD_LOOKUP_PREFIX_LEN 
-    || strncmp(interest_name, RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN))
-        return 0; // interest not handled
-    
+    // only respond to interest if this node is root
     if (dodag.rank != COMPAS_DODAG_ROOT_RANK) {
-        DEBUG("interest_received: is lookup request but this node is not root\n");
-        return 0; // interest not handled
-    }
-    DEBUG("interest_received: is lookup request and node is root, will respond as RD\n");
-
-    // build response 
-
-    char *query = interest_name + RD_LOOKUP_PREFIX_LEN;
-    DEBUG("interest_received: query: %s\n", query);
-
-    uint8_t payload[256];
-    size_t payload_len = sizeof(payload);
-    int lookup_result = rd_lookup_registered_content(query, strlen(query), payload, &payload_len);
-    if (lookup_result) {
-        DEBUG("interest_received: failed to build response message\n");
         return 0; // interest not handled
     }
 
-    ccnl_free(interest_name);
-
-    // send response
-
-    int offs = CCNL_MAX_PACKET_SIZE;
-    int content_len = ccnl_ndntlv_prependContent(pkt->pfx, (unsigned char*) payload, payload_len, NULL, NULL, &offs, _out);
-    if (content_len < 0) {
-        DEBUG("interest_received: Error, content length: %u\n", content_len);
+    // get name from interest and check if it starts with /rd/lookup/
+    if (pkt->pfx == NULL) {
+        DEBUG("interest_received: prefix is null\n");
         return 0; // interest not handled
     }
-    unsigned char *olddata;
-    unsigned char *data = olddata = _out + offs;
-    int len;
-    unsigned type;
-    if (ccnl_ndntlv_dehead(&data, &content_len, (int*) &type, &len) ||
-        type != NDN_TLV_Data) {
-        DEBUG("interest_received: ccnl_ndntlv_dehead\n");
+    char *interest_name = ccnl_prefix_to_path(pkt->pfx);
+    if (interest_name == NULL) {
+        DEBUG("interest_received: name is null\n");
         return 0; // interest not handled
     }
-    struct ccnl_pkt_s *response_pkt = ccnl_ndntlv_bytes2pkt(type, olddata, &data, &content_len);
-    int send_response_result = ccnl_send_pkt(relay, from, response_pkt);
-    if (send_response_result)
-        DEBUG("interest_received: send response failed with code: %i\n", send_response_result);
+    size_t interest_name_len = strlen(interest_name);
 
-    return 1; // interest handled
+    // check if lookup request
+    if (interest_name_len > RD_LOOKUP_PREFIX_LEN 
+    &&  strncmp(interest_name, RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN) == 0) {
+        // is lookup request
+        
+        rd_msg_t rdmsg = { .relay = relay, .from = from, .pkt = pkt };
+        msg_t msg = { .content.ptr = &rdmsg, .type = RD_LOOKUP_REQUEST_RX };
+        if (msg_send(&msg, rd_pid) != 1) {
+            DEBUG("content_requested: sending msg to rd thread failed\n");
+        }
+        ccnl_free(interest_name);
+        return 1; // interest handled
+    }
+
+    return 0; // interest not handled
 }
 
 void *hopp(void *arg)
@@ -985,7 +901,6 @@ void *hopp(void *arg)
                 hopp_parent_timeout(&dodag);
                 break;
             case HOPP_STOP_MSG:
-                ccnl_set_local_producer(NULL);
                 ccnl_callback_set_data_send(NULL);
                 ccnl_callback_set_data_received(NULL);
                 return NULL;
@@ -1073,100 +988,312 @@ bool rd_register(const char *name, size_t name_len,
         return false;
     }
 
-    // build message content
-
     rd_entry_t entry;
     rd_entry_init(&entry, name, name_len, contenttype, contenttype_len, lifetime);
 
-    uint8_t encoded[128];
-    size_t encoded_len = sizeof(encoded);
-
-    CborEncoder encoder, arrayEncoder;
-    cbor_encoder_init(&encoder, encoded, encoded_len, 0);
-    if (cbor_encoder_create_array(&encoder, &arrayEncoder, 1) != CborNoError) {
-        DEBUG("rd_register: creating array failed\n");
+    msg_t msg = { .content.ptr = &entry, .type = RD_REGISTER_REQUEST_TX };
+    if (msg_send(&msg, rd_pid) != 1) {
+        DEBUG("content_requested: sending msg to rd thread failed\n");
         return false;
     }
 
-    if (encode_entry(&arrayEncoder, &entry) != CborNoError) {
-        DEBUG("rd_register: Encoding entry failed\n");
-        return false;
-    } 
-    
-    if (cbor_encoder_close_container(&encoder, &arrayEncoder) != CborNoError) {
-        DEBUG("rd_register: Closing array failed\n");
-        return false;
-    }
-
-    encoded_len = cbor_encoder_get_buffer_size(&encoder, encoded);
-    DEBUG("rd_register: length of encoded message: %u\n", encoded_len);
-
-    // build message name
-
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    sha256(encoded, (size_t)encoded_len, hash);
-
-    char register_message_name[64];
-    size_t register_message_name_len = sizeof(register_message_name)-RD_REGISTER_PREFIX_LEN;
-    strcpy(register_message_name, RD_REGISTER_PREFIX);
-    if (!b58enc(&register_message_name[RD_REGISTER_PREFIX_LEN], &register_message_name_len, hash, 32))
-    {
-        DEBUG("rd_register: ERROR, b58enc failed.\n");
-        return false;
-    }
-    register_message_name[32] = 0;
-    DEBUG("rd_register: name of registration message: %s\n", register_message_name);
-    DEBUG("rd_register: length: %i\n", strlen(register_message_name));
-
-    return hopp_publish_content(register_message_name, strlen(register_message_name), (unsigned char*) encoded, encoded_len);
+    return true;
 }
 
-#define BUF_SIZE (100)
-static unsigned char _int_buf[BUF_SIZE];
-
-void *lookup(void *arg)
+static int rd_register_entry(const rd_entry_t *entry) 
 {
-    (void)arg;
-    msg_init_queue(lookup_q, LOOKUP_QSZ);
+    DEBUG("rd_register_entry: Trying to register entry:\n");
+    print_entry(entry);
+
+    mutex_lock(&_registered_content_mutex);
+    for (int j = 0; j < REGISTERED_CONTENT_COUNT; j++) {
+        if (_registered_content[j].lifetime > 0) {
+            continue;
+        }
+        _registered_content[j] = *entry;
+        DEBUG("rd_register_content: content was registered at index %u\n", j);
+        mutex_unlock(&_registered_content_mutex);
+        return 0;
+    }
+    DEBUG("rd_register_content: Content could not be registered, no available space left.\n");
+    mutex_unlock(&_registered_content_mutex);
+    return -1;
+}
+
+static int rd_lookup_registered_content(const char *contenttype, size_t contenttype_len,
+                                        uint8_t *response, size_t *response_len)
+{
+    DEBUG("rd_lookup_registered_content: searching registered content with type: %.*s\n", contenttype_len, contenttype);
+
+    CborEncoder encoder, arrayEncoder;
+    cbor_encoder_init(&encoder, response, *response_len, 0);
+    if (cbor_encoder_create_array(&encoder, &arrayEncoder, 1) != CborNoError) {
+        DEBUG("rd_lookup_registered_content: creating array failed\n");
+        return -1;
+    }
+
+    mutex_lock(&_registered_content_mutex);
+    for (int i = 0; i < REGISTERED_CONTENT_COUNT; i++) {
+        rd_entry_t entry = _registered_content[i];
+        if (entry.lifetime <= 0) {
+            continue;
+        }
+        if (entry.type_len != contenttype_len) {
+            continue;
+        }
+        if (strncmp(entry.type, contenttype, contenttype_len != 0)) {
+            continue;
+        }
+
+        DEBUG("rd_lookup_registered_content: found matching content with name: %.*s\n", entry.name_len, entry.name);
+        if (encode_entry(&arrayEncoder, &entry) != CborNoError) {
+            DEBUG("rd_lookup_registered_content: Encoding entry failed\n");
+            mutex_unlock(&_registered_content_mutex);
+            return -1;
+        } 
+    }
+    mutex_unlock(&_registered_content_mutex);
+
+    if (cbor_encoder_close_container(&encoder, &arrayEncoder) != CborNoError) {
+        DEBUG("rd_lookup_registered_content: Closing array failed\n");
+        return -1;
+    }
+
+    DEBUG("rd_lookup_registered_content: done searching.\n");
+
+    *response_len = cbor_encoder_get_buffer_size(&encoder, response);
+    DEBUG("rd_lookup_registered_content: length of encoded message: %u\n", *response_len);
+    return 0;
+}
+
+static char *rand_string(char *str, size_t size)
+{
+    const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ12345667890";
+    if (size) {
+        --size;
+        for (size_t n = 0; n < size; n++) {
+            int key = random_uint32_range(0, (sizeof charset - 1));
+            str[n] = charset[key];
+        }
+        str[size] = '\0';
+    }
+    return str;
+
+    /* 
+
+    if (!b58enc(&register_message_name[RD_REGISTER_PREFIX_LEN], &register_message_name_len, hash, 32))
+                {
+                    DEBUG("RD_REGISTER_REQUEST_TX: ERROR, b58enc failed.\n");
+                    break;
+                }
+
+                */
+}
+
+static int data_received_process_rd(struct ccnl_relay_s *relay, struct ccnl_pkt_s *pkt, struct ccnl_face_s *from) 
+{
+    (void)relay;
+    (void)from;
+
+    char *content_name = ccnl_prefix_to_path(pkt->pfx);
+    if (content_name == NULL)
+    {
+        DEBUG("process_rd: content name is null\n");
+        return 0; // not handled
+    }
+    size_t content_name_len = strlen(content_name);
+
+    // check if lookup response
+    if (content_name_len > RD_LOOKUP_PREFIX_LEN 
+    &&  strncmp(content_name, RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN) == 0) {
+        // is lookup response
+        
+        ccnl_free(content_name);
+
+        if (parse_entries((const uint8_t *)pkt->content, (const size_t)pkt->contlen, print_entry) != 0)
+            DEBUG("RD_LOOKUP_RESPONSE_RX: parsing lookup response failed\n");
+        return 1;
+    }
+
+    // check if register request
+    if (content_name_len > RD_REGISTER_PREFIX_LEN 
+    &&  strncmp(content_name, RD_REGISTER_PREFIX, RD_REGISTER_PREFIX_LEN) == 0
+    &&  dodag.rank == COMPAS_DODAG_ROOT_RANK) {
+        // is register request
+
+        ccnl_free(content_name);
+
+        if (parse_entries((const uint8_t *)pkt->content, pkt->contlen, rd_register_entry) != 0)
+            DEBUG("RD_REGISTER_REQUEST_RX: parsing failed\n");
+        return 1;
+    }
+    return 0;
+}
+
+void *rd(void* arg)
+{
+    (void) arg;
+
+    msg_init_queue(rd_q, RD_QSZ);
     ccnl_set_local_producer(interest_received);
+    hopp_callback_set_data_received(data_received_process_rd);
 
     msg_t msg;
     while (1) {
         msg_receive(&msg);
-        DEBUG("lookup: received msg\n");
+        DEBUG("rd: received msg\n");
 
-        char *prefix;
+        char name[COMPAS_NAME_LEN];
+        size_t payload_len;
+        uint8_t name_current_char, name_chars_available, payload[128];
         struct ccnl_prefix_s *prefix_ccnl;
-
-        struct ccnl_pkt_s *pkt;
-        uint8_t *response;
-        size_t response_len;
+        struct rd_entry_t *entry;
+        rd_lookup_msg_t *lookupmsg;
 
         switch (msg.type) {
-            case LOOKUP_REQUEST:
-                prefix = (char *) msg.content.ptr;
-                DEBUG("lookup: sending interest with name: %s\n", prefix);
+            case RD_LOOKUP_REQUEST_TX:
+                // client sends lookup request
+                DEBUG("rd: RD_LOOKUP_REQUEST_TX\n");
 
-                prefix_ccnl = ccnl_URItoPrefix(prefix, CCNL_SUITE_NDNTLV, NULL, 0);
-                memset(_int_buf, '\0', BUF_SIZE);
-                
-                if (ccnl_send_interest(prefix_ccnl, _int_buf, BUF_SIZE, NULL, NULL) != 0) {
-                    DEBUG("lookup: sending interest failed\n");
-                }
-                ccnl_prefix_free(prefix_ccnl);
-                
-                break;
-            case LOOKUP_RESPONSE:
-                pkt = (struct ccnl_pkt_s *)msg.content.ptr;
-                response = (uint8_t *)pkt->content;
-                response_len = (size_t)pkt->contlen;
+                lookupmsg = (rd_lookup_msg_t *)msg.content.ptr;
 
-                if (parse_entries(response, response_len, print_entry) != 0) {
-                    DEBUG("lookup: parsing lookup response failed\n");
+                memset(name, 0, sizeof(name));
+                name_current_char = 0;
+                name_chars_available = sizeof(name) - 1;
+                
+                // add rd lookup prefix
+                if (name_chars_available < RD_LOOKUP_PREFIX_LEN)
+                {
+                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
                     break;
                 }
+                strncpy(&name[name_current_char], RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN);
+                name_current_char += RD_LOOKUP_PREFIX_LEN;
+                name_chars_available -= RD_LOOKUP_PREFIX_LEN;
+
+                // add slash
+                if (name_chars_available < 1) 
+                {
+                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    break;
+                }
+                name[name_current_char] = '/';
+                name_current_char++;
+                name_chars_available--;
+
+                // add contenttype
+                if (name_chars_available < lookupmsg->contenttype_len)
+                {
+                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    break;
+                }
+                strncpy(&name[name_current_char], lookupmsg->contenttype, lookupmsg->contenttype_len);
+                name_current_char += lookupmsg->contenttype_len;
+                name_chars_available -= lookupmsg->contenttype_len;
+
+                // add slash
+                if (name_chars_available < 1) 
+                {
+                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    break;
+                }
+                name[name_current_char] = '/';
+                name_current_char++;
+                name_chars_available--;
+
+                // add session id
+                if (name_chars_available < 1) 
+                {
+                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    break;
+                }
+                rand_string(&name[name_current_char], name_chars_available > 31 ? 31 : name_chars_available);
+
+                // temporary workaround for bug in CCNL
+                name[32] = 0;
+
+                DEBUG("RD_LOOKUP_REQUEST_TX: sending interest with name: %s\n", name);
+
+                prefix_ccnl = ccnl_URItoPrefix(name, CCNL_SUITE_NDNTLV, NULL, 0);
+
+                memset(_lookup_int_buf, 0, HOPP_INTEREST_BUFSIZE);
+                if (ccnl_send_interest(prefix_ccnl, _lookup_int_buf, HOPP_INTEREST_BUFSIZE, NULL, NULL) != 0) {
+                    DEBUG("RD_LOOKUP_REQUEST_TX: sending interest failed\n");
+                }
+                ccnl_prefix_free(prefix_ccnl);
+            case RD_REGISTER_REQUEST_TX:
+                // client sends register request
+                DEBUG("rd: RD_REGISTER_REQUEST_TX\n");
+
+                // TODO: store rd_entry in static array
+                entry = (struct rd_entry_t *)msg.content.ptr;
+
+                payload_len = sizeof(payload);
+
+                CborEncoder encoder, arrayEncoder;
+                cbor_encoder_init(&encoder, payload, payload_len, 0);
+                if (cbor_encoder_create_array(&encoder, &arrayEncoder, 1) != CborNoError) {
+                    DEBUG("RD_REGISTER_REQUEST_TX: creating array failed\n");
+                    break;
+                }
+
+                if (encode_entry(&arrayEncoder, (const rd_entry_t *)entry) != CborNoError) {
+                    DEBUG("RD_REGISTER_REQUEST_TX: Encoding entry failed\n");
+                    break;
+                } 
+                
+                if (cbor_encoder_close_container(&encoder, &arrayEncoder) != CborNoError) {
+                    DEBUG("RD_REGISTER_REQUEST_TX: Closing array failed\n");
+                    break;
+                }
+
+                payload_len = cbor_encoder_get_buffer_size(&encoder, payload);
+                DEBUG("RD_REGISTER_REQUEST_TX: length of encoded message: %u\n", payload_len);
+
+                // build message name
+
+                memset(name, 0, sizeof(name));
+                name_current_char = 0;
+                name_chars_available = sizeof(name) - 1;
+
+                unsigned char hash[SHA256_DIGEST_LENGTH];
+                sha256(payload, (size_t)payload_len, hash);
+
+                // add rd register prefix
+                if (name_chars_available < RD_REGISTER_PREFIX_LEN)
+                {
+                    DEBUG("RD_REGISTER_REQUEST_TX: prefix will be too long\n");
+                    break;
+                }
+                strncpy(&name[name_current_char], RD_REGISTER_PREFIX, RD_REGISTER_PREFIX_LEN);
+                name_current_char += RD_REGISTER_PREFIX_LEN;
+                name_chars_available -= RD_REGISTER_PREFIX_LEN;
+
+                // add slash
+                if (name_chars_available < 1) 
+                {
+                    DEBUG("RD_REGISTER_REQUEST_TX: prefix will be too long\n");
+                    break;
+                }
+                name[name_current_char] = '/';
+                name_current_char++;
+                name_chars_available--;
+
+                if (!b58enc(&name[name_current_char], (size_t *) &name_chars_available, hash, 32))
+                {
+                    DEBUG("RD_REGISTER_REQUEST_TX: ERROR, b58enc failed.\n");
+                    break;
+                }
+                name[32] = 0;
+                DEBUG("RD_REGISTER_REQUEST_TX: name of registration message: %s\n", name);
+
+                if (!hopp_publish_content(name, strlen(name), (unsigned char*) payload, payload_len))
+                    DEBUG("RD_REGISTER_REQUEST_TX: publishing content failed.\n");
+                DEBUG("RD_REGISTER_REQUEST_TX: registration send\n");
                 break;
-            default: break;
+            default: 
+                DEBUG("Default case, should not happen\n");
+                break;
         }
     }
 
@@ -1175,18 +1302,18 @@ void *lookup(void *arg)
 
 bool rd_lookup(const char *contenttype, size_t contenttype_len)
 {   
-    // send interest
+    if (contenttype_len > COMPAS_NAME_LEN) {
+        DEBUG("contenttype is too long\n");
+        return false;
+    }
 
-    char prefix[65];
-    memset(prefix, 0, sizeof(prefix));
-
-    strcpy(prefix, RD_LOOKUP_PREFIX);
-    strncpy(&prefix[RD_LOOKUP_PREFIX_LEN], contenttype, contenttype_len);
-    prefix[32] = 0;
-    
-    msg_t msg = { .content.ptr = &prefix, .type = LOOKUP_REQUEST };
-    if (msg_send(&msg, lookup_pid) != 1) {
-        DEBUG("content_requested: sending msg to lookup thread failed\n");
+    rd_lookup_msg_t *lookup_msg = rd_lookup_msg_get_free_entry();
+    strncpy(lookup_msg->contenttype, contenttype, contenttype_len);
+    lookup_msg->contenttype_len = contenttype_len;
+    msg_t msg = { .content.ptr = lookup_msg, .type = RD_LOOKUP_REQUEST_TX };
+    if (msg_send(&msg, rd_pid) != 1) {
+        DEBUG("content_requested: sending msg to rd thread failed\n");
+        return false;
     }
 
     return true;

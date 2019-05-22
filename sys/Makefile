@@ -139,6 +139,9 @@ endif
 ifneq (,$(filter hopp,$(USEMODULE)))
   DIRS += net/routing/hopp
 endif
+ifneq (,$(filter rd,$(USEMODULE)))
+  DIRS += net/routing/rd
+endif
 
 DIRS += $(dir $(wildcard $(addsuffix /Makefile, $(USEMODULE))))
 

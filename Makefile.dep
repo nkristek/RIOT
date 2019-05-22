@@ -769,7 +769,7 @@ ifneq ($(OLD_USEMODULE) $(OLD_USEPKG),$(USEMODULE) $(USEPKG))
   include $(RIOTBASE)/Makefile.dep
 endif
 
-ifneq (,$(filter hopp,$(USEMODULE)))
+ifneq (,$(filter rd,$(USEMODULE)))
   USEPKG += libbase58
   USEPKG += tinycbor
   USEMODULE += hashes

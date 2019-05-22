@@ -19,6 +19,7 @@
 #include "ccn-lite-riot.h"
 
 #include "net/hopp/hopp.h"
+#include "net/rd/rd.h"
 
 #include "pktcnt.h"
 
@@ -207,7 +208,9 @@ int main(void)
         return 1;
     }
 
-    rd_pid = thread_create(rd_stack, sizeof(rd_stack), THREAD_PRIORITY_MAIN - 1, THREAD_CREATE_STACKTEST, rd, NULL, "rd");
+    rd_pid = thread_create(rd_stack, sizeof(rd_stack), THREAD_PRIORITY_MAIN - 1, 
+                           THREAD_CREATE_STACKTEST, rd, NULL, 
+                           "rd");
     if (rd_pid <= KERNEL_PID_UNDEF) {
         return 1;
     }

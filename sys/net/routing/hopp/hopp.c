@@ -513,7 +513,6 @@ static int content_requested(struct ccnl_relay_s *relay, struct ccnl_pkt_s *p,
     (void) relay;
     (void) from;
 
-    DEBUG("length:%u\n", p->contlen);
     int cb_res = hopp_callback_data_received(relay, p, from);
     if (cb_res)
         return cb_res; // handled
@@ -528,7 +527,6 @@ static int content_requested(struct ccnl_relay_s *relay, struct ccnl_pkt_s *p,
 
     compas_name_t cname;
     compas_name_init(&cname, content_name, content_name_len);
-    DEBUG("content_requested: got content with name: %.*s\n", cname.name_len, cname.name);
     compas_nam_cache_entry_t *n = compas_nam_cache_find(&dodag, &cname);
 
     if (n) {

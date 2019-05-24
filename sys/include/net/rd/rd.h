@@ -81,6 +81,13 @@ static inline void rd_lookup_msg_init(rd_lookup_msg_t *lookup_msg,
     lookup_msg->contenttype_len = contenttype_len;
 }
 
+typedef int (*rd_lookup_response_received_func)(struct ccnl_relay_s *relay,
+                                                struct ccnl_pkt_s *pkt,
+                                                struct ccnl_face_s *from);
+void rd_callback_set_lookup_response_received(rd_lookup_response_received_func func);
+int rd_callback_lookup_response_received(struct ccnl_relay_s *relay, struct ccnl_pkt_s *pkt,
+                                         struct ccnl_face_s *from);
+
 void *rd(void* arg);
 
 bool rd_register(const char *name, size_t name_len,

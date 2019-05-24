@@ -76,82 +76,41 @@ static int _publish(int argc, char **argv)
     return 0;
 }
 
-static char *rand_string(char *str, size_t size)
-{
-    const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ12345667890";
-    if (size) {
-        --size;
-        for (size_t n = 0; n < size; n++) {
-            int key = random_uint32_range(0, (sizeof charset - 1));
-            str[n] = charset[key];
-        }
-        str[size] = '\0';
-    }
-    return str;
-}
-
 static int _rd(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
     char *root_name = RD_PREFIX;
-    printf("starting rd with prefix: %s\n", root_name);
+    printf("RD_ROOT_START: %s\n", root_name);
     hopp_root_start(root_name, RD_PREFIX_LEN);
     return 0;
 }
 
 static int _register(int argc, char **argv)
 {
-    if (argc != 4) {
-        //printf("usage: %s <name> <contenttype> <lifetime>\n", argv[0]);
-        //return -1;
-
-        char name[10];
-        rand_string(name, sizeof(name));
-        char *contenttype = "temperature";
-        uint64_t lifetime = 90;
-
-        printf("registering with default arguments:\n");
-        printf("name: %s\n", name);
-        printf("contenttype: %s\n", contenttype);
-        printf("lifetime: %llu\n", lifetime);
-
-        if (rd_register(name, strlen(name),
-                        contenttype, strlen(contenttype),
-                        lifetime)) {
-            return 0;
-        }
-
-        printf("Registering failed\n");
+    if (argc != 3) {
+        printf("usage: %s <name> <contenttype>\n", argv[0]);
         return -1;
     }
 
     rd_register((const char *)argv[1], strlen(argv[1]), 
                 (const char *)argv[2], strlen(argv[2]),
-                90);
+                10);
     
     return 0;
 }
 
 static int _lookup(int argc, char **argv)
 {
-    if (argc != 2) {
-        //printf("usage: %s <contenttype>\n", argv[0]);
-        //return -1;
-
-        char *contenttype = "temperature";
-
-        printf("lookup with default arguments:\n");
-        printf("contenttype: %s\n", contenttype);
-
-        if (rd_lookup(contenttype, strlen(contenttype))) {
-            return 0;
-        }
-
-        printf("Lookup failed\n");
+    if (argc > 2) {
+        printf("usage: %s <contenttype>\n", argv[0]);
         return -1;
     }
-    
+    if (argc <= 1) {
+        rd_lookup(NULL, 0);
+        return 0;
+    }
+
     rd_lookup(argv[1], strlen(argv[1]));
     
     return 0;
@@ -161,7 +120,7 @@ static const shell_command_t shell_commands[] = {
     { "hr", "start HoPP root", _root },
     { "hp", "publish data with the given name", _publish },
     { "rd", "start RD", _rd },
-    { "rdr", "register a resource: rdr <name> <contenttype> <lifetime>", _register },
+    { "rdr", "register a resource: rdr <name> <contenttype>", _register },
     { "rdl", "lookup resources: rdl <contenttype>", _lookup },
     { NULL, NULL, NULL }
 };

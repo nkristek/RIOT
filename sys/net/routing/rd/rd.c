@@ -7,14 +7,15 @@
 #include "random.h"
 #include "mutex.h"
 #include "xtimer.h"
+#include "fmt.h"
 #define ENABLE_DEBUG    (1)
 
-static unsigned char _out[CCNL_MAX_PACKET_SIZE];
+static uint8_t _out[CCNL_MAX_PACKET_SIZE];
 char rd_stack[RD_STACKSZ];
 kernel_pid_t rd_pid;
 static msg_t rd_q[RD_QSZ];
 
-static unsigned char _lookup_int_buf[HOPP_INTEREST_BUFSIZE];
+static uint8_t _lookup_int_buf[CCNL_MAX_PACKET_SIZE];
 
 typedef struct __attribute__((packed)) {
     rd_entry_t entry;  
@@ -89,7 +90,6 @@ static int print_entry(const rd_entry_t *entry)
     return 0;
 }
 
-
 static rd_lookup_response_received_func _lookup_response_received_func = NULL;
 
 void
@@ -109,11 +109,11 @@ rd_callback_lookup_response_received(struct ccnl_relay_s *relay, struct ccnl_pkt
     return 1;
 }
 
-static CborError encode_entry(CborEncoder *encoder, const rd_entry_t *entry) 
+static CborError encode_entry(CborEncoder *encoder, const rd_entry_t *entry, uint64_t *next_index) 
 {
     CborEncoder mapEncoder;
     CborError error;
-    error = cbor_encoder_create_map(encoder, &mapEncoder, 3);
+    error = cbor_encoder_create_map(encoder, &mapEncoder, next_index ? 4 : 3);
     if (error != CborNoError) {
         DEBUG("encode_entry: error creating map\n");
         return error;
@@ -149,10 +149,26 @@ static CborError encode_entry(CborEncoder *encoder, const rd_entry_t *entry)
         DEBUG("encode_entry: error encoding lifetime key\n");
         return error;
     }
+    // TODO: calculate time left
     error = cbor_encode_uint(&mapEncoder, entry->lifetime);
     if (error != CborNoError) {
         DEBUG("encode_entry: error encoding lifetime value\n");
         return error;
+    }
+
+    // Next Index
+    if (next_index) {
+        error = cbor_encode_text_stringz(&mapEncoder, "ni");
+        if (error != CborNoError) {
+            DEBUG("encode_entry: error encoding next index key\n");
+            return error;
+        }
+        error = cbor_encode_uint(&mapEncoder, *next_index);
+        if (error != CborNoError) {
+            DEBUG("encode_entry: error encoding next index\n");
+            return error;
+        }
+        DEBUG("encode_entry: encoded next index\n");
     }
 
     error = cbor_encoder_close_container(encoder, &mapEncoder);
@@ -163,7 +179,7 @@ static CborError encode_entry(CborEncoder *encoder, const rd_entry_t *entry)
     return CborNoError;
 }
 
-static CborError parse_entry(const CborValue *map, rd_entry_t *entry) 
+static CborError parse_entry(const CborValue *map, rd_entry_t *entry, uint64_t *next_index) 
 {
     if (!cbor_value_is_map(map)) {
         DEBUG("parse_entry: error value is not map\n");
@@ -180,7 +196,7 @@ static CborError parse_entry(const CborValue *map, rd_entry_t *entry)
     // Name
     CborValue nameValue;
     error = cbor_value_map_find_value(map, "n", &nameValue);
-    if (error != CborNoError) {
+    if (error != CborNoError && cbor_value_get_type(&nameValue) != CborInvalidType) {
         DEBUG("parse_entry: error finding field n\n");
         return error;
     }
@@ -193,7 +209,7 @@ static CborError parse_entry(const CborValue *map, rd_entry_t *entry)
         DEBUG("parse_entry: error getting length of value of field n\n");
         return error;
     }
-    if (name_len > COMPAS_NAME_LEN) {
+    if (name_len > CCNL_MAX_PREFIX_SIZE) {
         DEBUG("parse_entry: error getting length of value of field n\n");
         return CborErrorDataTooLarge;
     }
@@ -206,7 +222,7 @@ static CborError parse_entry(const CborValue *map, rd_entry_t *entry)
     // Type
     CborValue typeValue;
     error = cbor_value_map_find_value(map, "t", &typeValue); 
-    if (error != CborNoError) {
+    if (error != CborNoError && cbor_value_get_type(&typeValue) != CborInvalidType) {
         DEBUG("parse_entry: error finding field t\n");
         return error;
     }
@@ -219,7 +235,7 @@ static CborError parse_entry(const CborValue *map, rd_entry_t *entry)
         DEBUG("parse_entry: error getting length of value of field t\n");
         return error;
     }
-    if (type_len > COMPAS_NAME_LEN) {
+    if (type_len > CCNL_MAX_PREFIX_SIZE) {
         DEBUG("parse_entry: error getting length of value of field t\n");
         return CborErrorDataTooLarge;
     }
@@ -232,7 +248,7 @@ static CborError parse_entry(const CborValue *map, rd_entry_t *entry)
     // Lifetime
     CborValue lifetimeValue;
     error = cbor_value_map_find_value(map, "lt", &lifetimeValue); 
-    if (error != CborNoError) {
+    if (error != CborNoError && cbor_value_get_type(&lifetimeValue) != CborInvalidType) {
         DEBUG("parse_entry: error finding field lt \n");
         return error;
     }
@@ -242,75 +258,79 @@ static CborError parse_entry(const CborValue *map, rd_entry_t *entry)
     }
     error = cbor_value_get_uint64(&lifetimeValue, &lifetime); 
     if (error != CborNoError) {
-        DEBUG("parse_entry: error gettings value of field lt\n");
+        DEBUG("parse_entry: error getting value of field lt\n");
         return error;
+    }
+
+    // Next Index
+    CborValue nextindexValue;
+    error = cbor_value_map_find_value(map, "ni", &nextindexValue);
+    if (error == CborNoError && cbor_value_get_type(&nextindexValue) != CborInvalidType) {
+        if (!cbor_value_is_unsigned_integer(&nextindexValue)) {
+            DEBUG("parse_entry: error field ni is not unsigned integer\n");
+            return CborErrorImproperValue;
+        }
+        error = cbor_value_get_uint64(&nextindexValue, next_index); 
+        if (error != CborNoError) {
+            DEBUG("parse_entry: error getting value of field ni\n");
+            return error;
+        }
     }
 
     rd_entry_init(entry, name, name_len, type, type_len, lifetime);
     return CborNoError;
 }
 
-static int parse_entries(const uint8_t *content, size_t content_len,
-                         int(*entry_callback)(const rd_entry_t *)) 
+static int parse_content(const uint8_t *content, size_t content_len,
+                         int(*entry_callback)(const rd_entry_t *),
+                         uint64_t *next_index) 
 {
+    if (content_len == 0)
+        return 0;
+
     CborParser parser;
-    CborValue array, map;
-    if (cbor_parser_init(content, content_len, 0, &parser, &array) != CborNoError) {
+    CborValue map;
+    if (cbor_parser_init(content, content_len, 0, &parser, &map) != CborNoError) {
         DEBUG("parse_registration: error creating parser\n");
         return -1;
     }
-    if (!cbor_value_is_array(&array)) {
-        DEBUG("parse_registration: error value is not array\n");
-        return -1;
-    }
-    if (cbor_value_enter_container(&array, &map) != CborNoError) {
-        DEBUG("parse_registration: error entering array\n");
+
+    rd_entry_t entry;
+    if (parse_entry(&map, &entry, next_index) != CborNoError) {
+        DEBUG("parse_registration: parsing entry failed\n");
         return -1;
     }
 
-    while (!cbor_value_at_end(&map)) {
-        rd_entry_t entry;
-        if (parse_entry(&map, &entry) != CborNoError) {
-            DEBUG("parse_registration: parsing entry failed\n");
-            return -1;
+    if (entry_callback != NULL) {
+        int callback_result = entry_callback(&entry);
+        if (callback_result) {
+            return callback_result;
         }
-
-        if (entry_callback != NULL) {
-            int callback_result = entry_callback(&entry);
-            if (callback_result) {
-                return callback_result;
-            }
-        }
-
-        if (cbor_value_advance(&map) != CborNoError) {
-            DEBUG("parse_registration: error advancing the array\n");
-            return -1;
-        }
-    }
-    
-    if (cbor_value_leave_container(&array, &map) != CborNoError) {
-        DEBUG("parse_registration: error leaving array\n");
-        return -1;
     }
 
     return 0;
 }
 
 static int rd_lookup_registered_content(const char *contenttype, size_t contenttype_len,
+                                        uint64_t start_index,
                                         uint8_t *response, size_t *response_len)
 {
     DEBUG("rd_lookup_registered_content: searching registered content with type: %.*s\n", contenttype_len, contenttype);
 
-    CborEncoder encoder, arrayEncoder;
-    cbor_encoder_init(&encoder, response, *response_len, 0);
-    if (cbor_encoder_create_array(&encoder, &arrayEncoder, CborIndefiniteLength) != CborNoError) {
-        DEBUG("rd_lookup_registered_content: creating array failed\n");
+    if (start_index > REGISTERED_CONTENT_COUNT) {
+        DEBUG("rd_lookup_registered_content: invalid start index %llu\n", start_index);
         return -1;
     }
 
+    CborEncoder encoder;
+    cbor_encoder_init(&encoder, response, *response_len, 0);
+
     mutex_lock(&_registered_content_mutex);
     uint64_t time_now = xtimer_now_usec64();
-    for (unsigned i = 0; i < REGISTERED_CONTENT_COUNT; i++) {
+    rd_registered_entry_t *matching_entry = NULL;
+    uint64_t next_matching_index;
+    bool has_next_matching_index = false;
+    for (uint64_t i = start_index; i < REGISTERED_CONTENT_COUNT; i++) {
         if (_registered_content[i].valid_until_usec < time_now) {
             continue;
         }
@@ -325,19 +345,22 @@ static int rd_lookup_registered_content(const char *contenttype, size_t contentt
 
         DEBUG("rd_lookup_registered_content: found matching content with name: %.*s\n", _registered_content[i].entry.name_len, _registered_content[i].entry.name);
 
-        if (encode_entry(&arrayEncoder, &_registered_content[i].entry) != CborNoError) {
+        if (matching_entry == NULL) {
+            matching_entry = &_registered_content[i];
+            continue;
+        }
+        next_matching_index = i;
+        has_next_matching_index = true;
+        break;
+    }
+    if (matching_entry != NULL) {
+        if (encode_entry(&encoder, &matching_entry->entry, has_next_matching_index ? &next_matching_index : NULL) != CborNoError) {
             DEBUG("rd_lookup_registered_content: Encoding entry failed\n");
-            cbor_encoder_close_container(&encoder, &arrayEncoder);
             mutex_unlock(&_registered_content_mutex);
             return -1;
         } 
     }
     mutex_unlock(&_registered_content_mutex);
-
-    if (cbor_encoder_close_container(&encoder, &arrayEncoder) != CborNoError) {
-        DEBUG("rd_lookup_registered_content: Closing array failed\n");
-        return -1;
-    }
 
     *response_len = cbor_encoder_get_buffer_size(&encoder, response);
     DEBUG("rd_lookup_registered_content: length of encoded message: %u\n", *response_len);
@@ -348,10 +371,8 @@ static int interest_received(struct ccnl_relay_s *relay,
                              struct ccnl_face_s *from,
                              struct ccnl_pkt_s *pkt)
 {
-    // only respond to interest if this node is root
-    if (dodag.rank != COMPAS_DODAG_ROOT_RANK) {
+    if (dodag.rank != COMPAS_DODAG_ROOT_RANK)
         return 0; // interest not handled
-    }
 
     // get name from interest and check if it starts with /rd/lookup/
     if (pkt->pfx == NULL) {
@@ -374,6 +395,7 @@ static int interest_received(struct ccnl_relay_s *relay,
 
         char query[COMPAS_NAME_LEN];
         memset(query, 0, sizeof(query));
+        size_t query_len = 0;
 
         const unsigned prefix_offset = RD_LOOKUP_PREFIX_LEN + 1; // length of rd-lookup prefix and following /
         for (unsigned i = 0; ; i++) { 
@@ -386,11 +408,32 @@ static int interest_received(struct ccnl_relay_s *relay,
                 break;
 
             query[i] = interest_name[prefix_offset + i];
+            query_len++;
         }
+        DEBUG("requested query: %.*s\n", query_len, query);
 
-        uint8_t payload[CCNL_MAX_PACKET_SIZE];
-        size_t payload_len = sizeof(payload);
-        int lookup_result = rd_lookup_registered_content(query, strlen(query), payload, &payload_len);
+        char chunk[4];
+        memset(chunk, 0, sizeof(chunk));
+
+        unsigned prefix_query_offset = prefix_offset + query_len + 1; // length of rd-lookup prefix, following /, query and following /
+        for (unsigned i = 0; ; i++) { 
+            // check if out of bounds
+            if (i >= sizeof(chunk)-1 || i >= (interest_name_len - prefix_query_offset))
+                break;
+
+            // check if char is terminator or /
+            if (interest_name[prefix_query_offset + i] == 0 || interest_name[prefix_query_offset + i] == '/')
+                break;
+
+            chunk[i] = interest_name[prefix_query_offset + i];
+        }
+        
+        uint64_t chunk_id = atoi(chunk);
+        DEBUG("requested chunk: %llu\n", chunk_id);
+
+        memset(payload, 0, sizeof(payload));
+
+        int lookup_result = rd_lookup_registered_content(query, strlen(query), chunk_id, payload, &payload_len);
         if (lookup_result) {
             DEBUG("RD_LOOKUP_REQUEST_RX: failed to build response message\n");
             return 0; // interest not handled
@@ -399,11 +442,12 @@ static int interest_received(struct ccnl_relay_s *relay,
         // send response
 
         int offs = CCNL_MAX_PACKET_SIZE;
-        int content_len = ccnl_ndntlv_prependContent(pkt->pfx, (unsigned char*) payload, payload_len, NULL, NULL, &offs, _out);
+        int content_len = ccnl_ndntlv_prependContent(pkt->pfx, (unsigned char *) payload, payload_len, NULL, NULL, &offs, _out);
         if (content_len < 0) {
             DEBUG("RD_LOOKUP_RESPONSE_TX: Error, content length: %i\n", content_len);
             return 0; // interest not handled
         }
+
         unsigned char *olddata;
         unsigned char *data = olddata = _out + offs;
         int len;
@@ -430,6 +474,7 @@ static int interest_received(struct ccnl_relay_s *relay,
 static int rd_register_entry(const rd_entry_t *entry) 
 {
 #ifdef DEBUG
+    printf("Registering entry:\n");
     print_entry(entry);
 #endif
 
@@ -462,16 +507,6 @@ static char *rand_string(char *str, size_t size)
         str[size] = '\0';
     }
     return str;
-
-    /* 
-
-    if (!b58enc(&register_message_name[RD_REGISTER_PREFIX_LEN], &register_message_name_len, hash, 32))
-                {
-                    DEBUG("RD_REGISTER_REQUEST_TX: ERROR, b58enc failed.\n");
-                    break;
-                }
-
-                */
 }
 
 static int data_received_process_rd(struct ccnl_relay_s *relay, struct ccnl_pkt_s *pkt, struct ccnl_face_s *from) 
@@ -504,8 +539,11 @@ static int data_received_process_rd(struct ccnl_relay_s *relay, struct ccnl_pkt_
         // is register request
         printf("RD_REGISTER_REQUEST_RX: %.*s\n", content_name_len, content_name);
 
-        if (parse_entries((const uint8_t *)pkt->content, pkt->contlen, rd_register_entry))
+        uint64_t next_index = 0;
+        if (parse_content((const uint8_t *)pkt->content, pkt->contlen, rd_register_entry, &next_index))
             DEBUG("RD_REGISTER_REQUEST_RX: parsing failed\n");
+        
+        // TODO: use next_index?
 
         ccnl_free(content_name);
         return 1; // handled
@@ -518,9 +556,52 @@ static int process_lookup_response(struct ccnl_relay_s *relay, struct ccnl_pkt_s
     (void)relay;
     (void)from;
 
-    if (parse_entries((const uint8_t *)pkt->content, pkt->contlen, print_entry)) {
+    uint64_t next_index = 0;
+    if (parse_content((const uint8_t *)pkt->content, pkt->contlen, print_entry, &next_index)) {
         DEBUG("RD_LOOKUP_RESPONSE_RX: parsing lookup response failed\n");
         return 0; // not handled
+    }
+
+    if (next_index != 0)
+        return 1; // handled
+
+    return 1; // TODO: ask for next chunk
+
+    DEBUG("Asking for next chunk...\n");
+    if (pkt->pfx == NULL) {
+        DEBUG("process_lookup_response: prefix is null\n");
+        return 1; // handled
+    }
+    char *interest_name = ccnl_prefix_to_path(pkt->pfx);
+    if (interest_name == NULL) {
+        DEBUG("process_lookup_response: name is null\n");
+        return 1; // handled
+    }
+    size_t interest_name_len = strlen(interest_name);
+
+    char contenttype[CCNL_MAX_PREFIX_SIZE];
+    memset(contenttype, 0, sizeof(contenttype));
+    size_t contenttype_len = 0;
+
+    const unsigned prefix_offset = RD_LOOKUP_PREFIX_LEN + 1; // length of rd-lookup prefix and following /
+    for (unsigned i = 0; ; i++) {
+        // check if out of bounds
+        if (i >= sizeof(contenttype) || i >= (interest_name_len - prefix_offset))
+            break;
+
+        // check if char is terminator or /
+        if (interest_name[prefix_offset + i] == 0 || interest_name[prefix_offset + i] == '/')
+            break;
+
+        contenttype[i] = interest_name[prefix_offset + i];
+        contenttype_len++;
+    }
+
+    rd_lookup_msg_t *lookup_msg = rd_lookup_msg_get_free_entry();
+    rd_lookup_msg_init(lookup_msg, contenttype, contenttype_len, next_index);
+    msg_t msg = { .content.ptr = lookup_msg, .type = RD_LOOKUP_REQUEST_TX };
+    if (msg_send(&msg, rd_pid) != 1) {
+        DEBUG("process_lookup_response: sending msg to rd thread failed\n");
     }
     return 1; // handled
 }
@@ -537,7 +618,7 @@ void *rd(void* arg)
     while (1) {
         msg_receive(&msg);
 
-        char name[COMPAS_NAME_LEN];
+        char name[CCNL_MAX_PREFIX_SIZE + 1];
         uint8_t name_current_char, name_chars_available;
         struct ccnl_prefix_s *prefix_ccnl;
         rd_entry_t *entry;
@@ -554,8 +635,7 @@ void *rd(void* arg)
                 name_chars_available = sizeof(name) - 1;
                 
                 // add rd lookup prefix
-                if (name_chars_available < RD_LOOKUP_PREFIX_LEN)
-                {
+                if (name_chars_available < RD_LOOKUP_PREFIX_LEN) {
                     DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
                     break;
                 }
@@ -564,8 +644,7 @@ void *rd(void* arg)
                 name_chars_available -= RD_LOOKUP_PREFIX_LEN;
 
                 // add slash
-                if (name_chars_available < 1) 
-                {
+                if (name_chars_available < 1) {
                     DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
                     break;
                 }
@@ -584,11 +663,29 @@ void *rd(void* arg)
                     name_current_char += lookup_msg->contenttype_len;
                     name_chars_available -= lookup_msg->contenttype_len;
                 }
-                rd_lookup_msg_free(lookup_msg);
 
                 // add slash
-                if (name_chars_available < 1) 
-                {
+                if (name_chars_available < 1) {
+                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    break;
+                }
+                name[name_current_char] = '/';
+                name_current_char++;
+                name_chars_available--;
+
+                // add chunk_number
+                if (name_chars_available < 8) {
+                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    break;
+                }
+                size_t result = fmt_u64_dec(&name[name_current_char], lookup_msg->chunk);
+                name_current_char += result;
+                name_chars_available -= result;
+
+                rd_lookup_msg_free(lookup_msg);
+                
+                // add slash
+                if (name_chars_available < 1) {
                     DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
                     break;
                 }
@@ -597,14 +694,12 @@ void *rd(void* arg)
                 name_chars_available--;
 
                 // add session id
-                if (name_chars_available < 1) 
-                {
+                if (name_chars_available < 1) {
                     DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
                     break;
                 }
                 rand_string(&name[name_current_char], name_chars_available);
 
-                // TODO: temporary workaround for bug in CCNL
                 name[32] = 0;
 
                 printf("RD_LOOKUP_REQUEST_TX: %s\n", name);
@@ -612,7 +707,7 @@ void *rd(void* arg)
                 prefix_ccnl = ccnl_URItoPrefix(name, CCNL_SUITE_NDNTLV, NULL, 0);
 
                 memset(_lookup_int_buf, 0, HOPP_INTEREST_BUFSIZE);
-                if (ccnl_send_interest(prefix_ccnl, _lookup_int_buf, HOPP_INTEREST_BUFSIZE, NULL, NULL) != 0)
+                if (ccnl_send_interest(prefix_ccnl, _lookup_int_buf, sizeof(_lookup_int_buf), NULL, NULL) != 0)
                     DEBUG("RD_LOOKUP_REQUEST_TX: sending interest failed\n");
                 
                 ccnl_prefix_free(prefix_ccnl);
@@ -621,24 +716,17 @@ void *rd(void* arg)
                 // client sends register request
 
                 entry = (rd_entry_t *)msg.content.ptr;
+                
+                memset(payload, 0, sizeof(payload));
 
-                CborEncoder encoder, arrayEncoder;
+                CborEncoder encoder;
                 cbor_encoder_init(&encoder, payload, payload_len, 0);
-                if (cbor_encoder_create_array(&encoder, &arrayEncoder, 1) != CborNoError) {
-                    DEBUG("RD_REGISTER_REQUEST_TX: creating array failed\n");
-                    break;
-                }
 
-                if (encode_entry(&arrayEncoder, (const rd_entry_t *)entry) != CborNoError) {
+                if (encode_entry(&encoder, (const rd_entry_t *)entry, NULL) != CborNoError) {
                     DEBUG("RD_REGISTER_REQUEST_TX: Encoding entry failed\n");
                     break;
                 } 
                 rd_entry_free(entry);
-                
-                if (cbor_encoder_close_container(&encoder, &arrayEncoder) != CborNoError) {
-                    DEBUG("RD_REGISTER_REQUEST_TX: Closing array failed\n");
-                    break;
-                }
 
                 payload_len = cbor_encoder_get_buffer_size(&encoder, payload);
 
@@ -678,12 +766,11 @@ void *rd(void* arg)
                     break;
                 }
 
-                // TODO: temporary workaround for bug in CCNL
                 name[32] = 0;
 
                 printf("RD_REGISTER_REQUEST_TX: %s\n", name);
 
-                if (!hopp_publish_content(name, strlen(name), (unsigned char*) payload, payload_len))
+                if (!hopp_publish_content(name, strlen(name), (unsigned char *) payload, payload_len))
                     DEBUG("RD_REGISTER_REQUEST_TX: publishing content failed.\n");
 
                 break;
@@ -719,7 +806,7 @@ bool rd_register(const char *name, size_t name_len,
 
 bool rd_lookup(const char *contenttype, size_t contenttype_len)
 {   
-    if (contenttype_len > COMPAS_NAME_LEN) {
+    if (contenttype_len > CCNL_MAX_PREFIX_SIZE-RD_LOOKUP_PREFIX_LEN) {
         DEBUG("contenttype is too long\n");
         return false;
     }
@@ -727,7 +814,7 @@ bool rd_lookup(const char *contenttype, size_t contenttype_len)
     rd_callback_set_lookup_response_received(process_lookup_response);
 
     rd_lookup_msg_t *lookup_msg = rd_lookup_msg_get_free_entry();
-    rd_lookup_msg_init(lookup_msg, contenttype, contenttype_len);
+    rd_lookup_msg_init(lookup_msg, contenttype, contenttype_len, 0);
 
     msg_t msg = { .content.ptr = lookup_msg, .type = RD_LOOKUP_REQUEST_TX };
     if (msg_send(&msg, rd_pid) != 1) {

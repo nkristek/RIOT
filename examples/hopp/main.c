@@ -95,7 +95,7 @@ static int _register(int argc, char **argv)
 
     rd_register((const char *)argv[1], strlen(argv[1]), 
                 (const char *)argv[2], strlen(argv[2]),
-                10);
+                300);
     
     return 0;
 }

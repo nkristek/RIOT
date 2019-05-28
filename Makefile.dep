@@ -772,5 +772,6 @@ endif
 ifneq (,$(filter rd,$(USEMODULE)))
   USEPKG += libbase58
   USEPKG += tinycbor
+  USEMODULE += fmt
   USEMODULE += hashes
 endif

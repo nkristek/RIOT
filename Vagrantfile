@@ -23,6 +23,7 @@ Vagrant.configure(2) do |config|
   end
 
   config.vm.synced_folder RIOTBASE, "/home/vagrant/RIOT"
+  config.vm.synced_folder RIOTBASE + "/../iotlab_controller", "/home/vagrant/iotlab_controller"
 
   if File.exists?(File.join(Dir.home, ".gitconfig"))
     config.vm.provision "file", source: File.join(Dir.home, ".gitconfig"), destination: ".gitconfig"

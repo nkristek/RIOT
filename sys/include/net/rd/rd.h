@@ -1,7 +1,7 @@
 #include "kernel_types.h"
 
 #ifndef RD_STACKSZ
-#define RD_STACKSZ                  (THREAD_STACKSIZE_DEFAULT + THREAD_EXTRA_STACKSIZE_PRINTF + 1024)
+#define RD_STACKSZ                  (THREAD_STACKSIZE_DEFAULT + THREAD_EXTRA_STACKSIZE_PRINTF)
 #endif
 #ifndef RD_QSZ
 #define RD_QSZ                      (4)

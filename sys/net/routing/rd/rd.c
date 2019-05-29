@@ -275,6 +275,7 @@ static CborError parse_entry(const CborValue *map, rd_entry_t *entry, uint64_t *
             DEBUG("parse_entry: error getting value of field ni\n");
             return error;
         }
+        DEBUG("parse_entry: has next index: %llu\n", *next_index);
     }
 
     rd_entry_init(entry, name, name_len, type, type_len, lifetime);
@@ -308,6 +309,64 @@ static int parse_content(const uint8_t *content, size_t content_len,
         }
     }
 
+    return 0;
+}
+
+static int parse_contenttype_of_prefix(const char *prefix, size_t prefix_len, char *contenttype, size_t contenttype_len)
+{
+    size_t output_len = 0;
+    const unsigned lookup_prefix_offset = RD_LOOKUP_PREFIX_LEN + 1; // length of rd-lookup prefix and following /
+    for (unsigned i = 0; ; i++) {
+        // check if out of bounds
+        if (i >= contenttype_len || i >= (prefix_len - lookup_prefix_offset))
+            return -1;
+
+        // check if char is terminator or /
+        if (prefix[lookup_prefix_offset + i] == 0 || prefix[lookup_prefix_offset + i] == '/')
+            break;
+
+        contenttype[i] = prefix[lookup_prefix_offset + i];
+        output_len++;
+    }
+    return output_len;
+}
+
+static int parse_chunk_of_prefix(const char *prefix, size_t prefix_len, uint64_t *chunk)
+{
+    char buf[4];
+    memset(buf, 0, sizeof(buf));
+
+    const unsigned lookup_prefix_offset = RD_LOOKUP_PREFIX_LEN + 1; // length of rd-lookup prefix and following /
+    unsigned contenttype_len = 0;
+    for (unsigned i = 0; ; i++) { 
+        // check if out of bounds
+        if (i >= (prefix_len - lookup_prefix_offset))
+            return -1;
+
+        // check if char is terminator or /
+        if (prefix[lookup_prefix_offset + i] == 0)
+            return -1;
+
+        contenttype_len++;
+        if (prefix[lookup_prefix_offset + i] == '/')
+            break;
+    }
+
+
+    unsigned prefix_offset = lookup_prefix_offset + contenttype_len;
+    for (unsigned i = 0; ; i++) { 
+        // check if out of bounds
+        if (i >= sizeof(buf)-1 || i >= (prefix_len - prefix_offset))
+            return -1;
+
+        // check if char is terminator or /
+        if (prefix[prefix_offset + i] == 0 || prefix[prefix_offset + i] == '/')
+            break;
+
+        buf[i] = prefix[prefix_offset + i];
+    }
+    
+    *chunk = atoi(buf);
     return 0;
 }
 
@@ -393,47 +452,24 @@ static int interest_received(struct ccnl_relay_s *relay,
 
         printf("RD_LOOKUP_REQUEST_RX: %.*s\n", interest_name_len, interest_name);
 
-        char query[COMPAS_NAME_LEN];
-        memset(query, 0, sizeof(query));
-        size_t query_len = 0;
-
-        const unsigned prefix_offset = RD_LOOKUP_PREFIX_LEN + 1; // length of rd-lookup prefix and following /
-        for (unsigned i = 0; ; i++) { 
-            // check if out of bounds
-            if (i >= sizeof(query) || i >= (interest_name_len - prefix_offset))
-                break;
-
-            // check if char is terminator or /
-            if (interest_name[prefix_offset + i] == 0 || interest_name[prefix_offset + i] == '/')
-                break;
-
-            query[i] = interest_name[prefix_offset + i];
-            query_len++;
+        char contenttype[CCNL_MAX_PREFIX_SIZE];
+        memset(contenttype, 0, sizeof(contenttype));
+        int contenttype_len = parse_contenttype_of_prefix(interest_name, interest_name_len, contenttype, sizeof(contenttype));
+        if (contenttype_len < 0) {
+            DEBUG("process_lookup_response: parsing the contenttype failed, input was: %.*s\n", interest_name_len, interest_name);
+            return 1; // handled
         }
-        DEBUG("requested query: %.*s\n", query_len, query);
+        DEBUG("requested contenttype: %.*s\n", contenttype_len, contenttype);
 
-        char chunk[4];
-        memset(chunk, 0, sizeof(chunk));
-
-        unsigned prefix_query_offset = prefix_offset + query_len + 1; // length of rd-lookup prefix, following /, query and following /
-        for (unsigned i = 0; ; i++) { 
-            // check if out of bounds
-            if (i >= sizeof(chunk)-1 || i >= (interest_name_len - prefix_query_offset))
-                break;
-
-            // check if char is terminator or /
-            if (interest_name[prefix_query_offset + i] == 0 || interest_name[prefix_query_offset + i] == '/')
-                break;
-
-            chunk[i] = interest_name[prefix_query_offset + i];
+        uint64_t chunk;
+        if (parse_chunk_of_prefix(interest_name, interest_name_len, &chunk)) {
+            DEBUG("process_lookup_response: parsing the chunk failed, input was: %.*s\n", interest_name_len, interest_name);
+            return 1; // handled
         }
-        
-        uint64_t chunk_id = atoi(chunk);
-        DEBUG("requested chunk: %llu\n", chunk_id);
+        DEBUG("requested chunk: %llu\n", chunk);
 
         memset(payload, 0, sizeof(payload));
-
-        int lookup_result = rd_lookup_registered_content(query, strlen(query), chunk_id, payload, &payload_len);
+        int lookup_result = rd_lookup_registered_content(contenttype, contenttype_len, chunk, payload, &payload_len);
         if (lookup_result) {
             DEBUG("RD_LOOKUP_REQUEST_RX: failed to build response message\n");
             return 0; // interest not handled
@@ -562,12 +598,11 @@ static int process_lookup_response(struct ccnl_relay_s *relay, struct ccnl_pkt_s
         return 0; // not handled
     }
 
-    if (next_index != 0)
+    if (next_index == 0)
         return 1; // handled
 
-    return 1; // TODO: ask for next chunk
-
-    DEBUG("Asking for next chunk...\n");
+    DEBUG("Asking for next chunk: %llu\n", next_index);
+    
     if (pkt->pfx == NULL) {
         DEBUG("process_lookup_response: prefix is null\n");
         return 1; // handled
@@ -581,20 +616,10 @@ static int process_lookup_response(struct ccnl_relay_s *relay, struct ccnl_pkt_s
 
     char contenttype[CCNL_MAX_PREFIX_SIZE];
     memset(contenttype, 0, sizeof(contenttype));
-    size_t contenttype_len = 0;
-
-    const unsigned prefix_offset = RD_LOOKUP_PREFIX_LEN + 1; // length of rd-lookup prefix and following /
-    for (unsigned i = 0; ; i++) {
-        // check if out of bounds
-        if (i >= sizeof(contenttype) || i >= (interest_name_len - prefix_offset))
-            break;
-
-        // check if char is terminator or /
-        if (interest_name[prefix_offset + i] == 0 || interest_name[prefix_offset + i] == '/')
-            break;
-
-        contenttype[i] = interest_name[prefix_offset + i];
-        contenttype_len++;
+    int contenttype_len = parse_contenttype_of_prefix(interest_name, interest_name_len, contenttype, sizeof(contenttype));
+    if (contenttype_len < 0) {
+        DEBUG("process_lookup_response: parsing the contenttype failed, input was: %.*s\n", interest_name_len, interest_name);
+        return 1; // handled
     }
 
     rd_lookup_msg_t *lookup_msg = rd_lookup_msg_get_free_entry();

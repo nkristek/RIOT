@@ -207,12 +207,11 @@ int main(void)
     gnrc_netif_addr_to_str(hwaddr, sizeof(hwaddr), hwaddr_str);
 
     /* init pktcnt */
-    /*
+    
     if (pktcnt_init() != PKTCNT_OK) {
         puts("error: unable to initialize pktcnt");
         return 1;
     }
-    */
 
     hopp_pid = thread_create(hopp_stack, sizeof(hopp_stack), THREAD_PRIORITY_MAIN - 1,
                              THREAD_CREATE_STACKTEST, hopp, &ccnl_relay,

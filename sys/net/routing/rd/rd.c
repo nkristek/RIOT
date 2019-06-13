@@ -8,7 +8,8 @@
 #include "mutex.h"
 #include "xtimer.h"
 #include "fmt.h"
-#define ENABLE_DEBUG    (1)
+
+//#define ENABLE_DEBUG (1)
 
 static uint8_t _out[CCNL_MAX_PACKET_SIZE];
 char rd_stack[RD_STACKSZ];
@@ -77,6 +78,7 @@ static void rd_entry_free(rd_entry_t *entry)
     mutex_unlock(&_rd_entry_pool_mutex);
 }
 
+#if ENABLE_DEBUG
 static int print_entry(const rd_entry_t *entry) 
 {
     printf("-------------\n");
@@ -86,6 +88,7 @@ static int print_entry(const rd_entry_t *entry)
     printf("-------------\n");
     return 0;
 }
+#endif
 
 static rd_lookup_response_received_func _lookup_response_received_func = NULL;
 
@@ -510,7 +513,7 @@ static int interest_received(struct ccnl_relay_s *relay,
 
 static int rd_register_entry(const rd_entry_t *entry) 
 {
-#ifdef DEBUG
+#if ENABLE_DEBUG
     printf("Registering entry:\n");
     print_entry(entry);
 #endif
@@ -592,7 +595,11 @@ static int process_lookup_response(struct ccnl_relay_s *relay, struct ccnl_pkt_s
     (void)from;
 
     uint64_t next_index = 0;
+#if ENABLE_DEBUG
     if (parse_content((const uint8_t *)pkt->content, pkt->contlen, print_entry, &next_index)) {
+#else
+    if (parse_content((const uint8_t *)pkt->content, pkt->contlen, NULL, &next_index)) {
+#endif
         DEBUG("RD_LOOKUP_RESPONSE_RX: parsing lookup response failed\n");
         return 0; // not handled
     }

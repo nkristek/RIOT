@@ -30,9 +30,6 @@ static mutex_t _rd_lookup_msg_pool_mutex = MUTEX_INIT;
 static rd_entry_t _rd_entry_pool[RD_MSG_POOL_SIZE];
 static mutex_t _rd_entry_pool_mutex = MUTEX_INIT;
 
-static uint8_t payload[CCNL_MAX_PACKET_SIZE];
-static size_t payload_len = sizeof(payload);
-
 static rd_lookup_msg_t *rd_lookup_msg_get_free_entry(void) 
 {
     mutex_lock(&_rd_lookup_msg_pool_mutex);
@@ -160,7 +157,7 @@ static CborError encode_entry(CborEncoder *encoder, const rd_entry_t *entry, uin
     if (next_index) {
         error = cbor_encode_text_stringz(&mapEncoder, "ni");
         if (error != CborNoError) {
-            DEBUG("encode_entry: error encoding next index key\n");
+            DEBUG("encode_entry: error encoding next index key: %i\n", error);
             return error;
         }
         error = cbor_encode_uint(&mapEncoder, *next_index);
@@ -372,7 +369,7 @@ static int parse_chunk_of_prefix(const char *prefix, size_t prefix_len, uint64_t
 
 static int rd_lookup_registered_content(const char *contenttype, size_t contenttype_len,
                                         uint64_t start_index,
-                                        uint8_t *response, size_t *response_len)
+                                        uint8_t *response, size_t response_len)
 {
     DEBUG("rd_lookup_registered_content: searching registered content with type: %.*s\n", contenttype_len, contenttype);
 
@@ -382,7 +379,7 @@ static int rd_lookup_registered_content(const char *contenttype, size_t contentt
     }
 
     CborEncoder encoder;
-    cbor_encoder_init(&encoder, response, *response_len, 0);
+    cbor_encoder_init(&encoder, response, response_len, 0);
 
     mutex_lock(&_registered_content_mutex);
     uint64_t time_now = xtimer_now_usec64();
@@ -413,6 +410,9 @@ static int rd_lookup_registered_content(const char *contenttype, size_t contentt
         break;
     }
     if (matching_entry != NULL) {
+        if (has_next_matching_index)
+            DEBUG("Has next matching index %llu\n", next_matching_index);
+
         if (encode_entry(&encoder, &matching_entry->entry, has_next_matching_index ? &next_matching_index : NULL) != CborNoError) {
             DEBUG("rd_lookup_registered_content: Encoding entry failed\n");
             mutex_unlock(&_registered_content_mutex);
@@ -421,9 +421,9 @@ static int rd_lookup_registered_content(const char *contenttype, size_t contentt
     }
     mutex_unlock(&_registered_content_mutex);
 
-    *response_len = cbor_encoder_get_buffer_size(&encoder, response);
-    DEBUG("rd_lookup_registered_content: length of encoded message: %u\n", *response_len);
-    return 0;
+    size_t return_response_len = cbor_encoder_get_buffer_size(&encoder, response);
+    DEBUG("rd_lookup_registered_content: length of encoded message: %u\n", return_response_len);
+    return return_response_len;
 }
 
 static int interest_received(struct ccnl_relay_s *relay,
@@ -450,7 +450,7 @@ static int interest_received(struct ccnl_relay_s *relay,
     &&  strncmp(interest_name, RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN) == 0) {
         // is lookup request
 
-        printf("RD_LOOKUP_REQUEST_RX: %.*s\n", interest_name_len, interest_name);
+        printf("RD_LOOKUP_REQUEST_RX;%.*s\n", interest_name_len, interest_name);
 
         char contenttype[CCNL_MAX_PREFIX_SIZE];
         memset(contenttype, 0, sizeof(contenttype));
@@ -468,9 +468,10 @@ static int interest_received(struct ccnl_relay_s *relay,
         }
         DEBUG("requested chunk: %llu\n", chunk);
 
+        uint8_t payload[CCNL_MAX_PACKET_SIZE];
         memset(payload, 0, sizeof(payload));
-        int lookup_result = rd_lookup_registered_content(contenttype, contenttype_len, chunk, payload, &payload_len);
-        if (lookup_result) {
+        int payload_len = rd_lookup_registered_content(contenttype, contenttype_len, chunk, payload, sizeof(payload));
+        if (payload_len <= 0) {
             DEBUG("RD_LOOKUP_REQUEST_RX: failed to build response message\n");
             return 0; // interest not handled
         }
@@ -494,7 +495,7 @@ static int interest_received(struct ccnl_relay_s *relay,
             return 0; // interest not handled
         }
 
-        printf("RD_LOOKUP_RESPONSE_TX: %.*s\n", interest_name_len, interest_name);
+        printf("RD_LOOKUP_RESPONSE_TX;%.*s\n", interest_name_len, interest_name);
         ccnl_free(interest_name);
 
         struct ccnl_pkt_s *resp_pkt = ccnl_ndntlv_bytes2pkt(type, olddata, &data, &content_len);
@@ -559,7 +560,7 @@ static int data_received_process_rd(struct ccnl_relay_s *relay, struct ccnl_pkt_
     if (content_name_len > RD_LOOKUP_PREFIX_LEN 
     &&  strncmp(content_name, RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN) == 0) {
         // is lookup response
-        printf("RD_LOOKUP_RESPONSE_RX: %.*s\n", content_name_len, content_name);
+        printf("RD_LOOKUP_RESPONSE_RX;%.*s\n", content_name_len, content_name);
         ccnl_free(content_name);
 
         if (rd_callback_lookup_response_received(relay, pkt, from))
@@ -573,13 +574,11 @@ static int data_received_process_rd(struct ccnl_relay_s *relay, struct ccnl_pkt_
     &&  strncmp(content_name, RD_REGISTER_PREFIX, RD_REGISTER_PREFIX_LEN) == 0
     &&  dodag.rank == COMPAS_DODAG_ROOT_RANK) {
         // is register request
-        printf("RD_REGISTER_REQUEST_RX: %.*s\n", content_name_len, content_name);
+        printf("RD_REGISTER_REQUEST_RX;%.*s\n", content_name_len, content_name);
 
         uint64_t next_index = 0;
         if (parse_content((const uint8_t *)pkt->content, pkt->contlen, rd_register_entry, &next_index))
             DEBUG("RD_REGISTER_REQUEST_RX: parsing failed\n");
-        
-        // TODO: use next_index?
 
         ccnl_free(content_name);
         return 1; // handled
@@ -727,7 +726,7 @@ void *rd(void* arg)
 
                 name[32] = 0;
 
-                printf("RD_LOOKUP_REQUEST_TX: %s\n", name);
+                printf("RD_LOOKUP_REQUEST_TX;%s\n", name);
 
                 prefix_ccnl = ccnl_URItoPrefix(name, CCNL_SUITE_NDNTLV, NULL, 0);
 
@@ -742,6 +741,8 @@ void *rd(void* arg)
 
                 entry = (rd_entry_t *)msg.content.ptr;
                 
+                uint8_t payload[CCNL_MAX_PACKET_SIZE];
+                size_t payload_len = sizeof(payload);
                 memset(payload, 0, sizeof(payload));
 
                 CborEncoder encoder;
@@ -793,7 +794,7 @@ void *rd(void* arg)
 
                 name[32] = 0;
 
-                printf("RD_REGISTER_REQUEST_TX: %s\n", name);
+                printf("RD_REGISTER_REQUEST_TX;%s\n", name);
 
                 if (!hopp_publish_content(name, strlen(name), (unsigned char *) payload, payload_len))
                     DEBUG("RD_REGISTER_REQUEST_TX: publishing content failed.\n");
@@ -823,6 +824,7 @@ bool rd_register(const char *name, size_t name_len,
     msg_t msg = { .content.ptr = entry, .type = RD_REGISTER_REQUEST_TX };
     if (msg_send(&msg, rd_pid) != 1) {
         DEBUG("content_requested: sending msg to rd thread failed\n");
+        rd_entry_free(entry);
         return false;
     }
 

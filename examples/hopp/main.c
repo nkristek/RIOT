@@ -95,7 +95,7 @@ static int _register(int argc, char **argv)
 
     rd_register((const char *)argv[1], strlen(argv[1]), 
                 (const char *)argv[2], strlen(argv[2]),
-                300);
+                7200);
     
     return 0;
 }
@@ -116,12 +116,67 @@ static int _lookup(int argc, char **argv)
     return 0;
 }
 
+static int _test_lookup(int argc, char **argv)
+{
+    if (argc > 2) {
+        printf("usage: %s <contenttype>\n", argv[0]);
+        return -1;
+    }
+
+    while (1) {
+        int wait_seconds = random_uint32_range(5, 15);
+        xtimer_usleep(wait_seconds * 1000000);
+
+        rd_lookup(argv[1], strlen(argv[1]));
+    }
+    
+    return 0;
+}
+
+static char *rand_string(char *str, size_t size)
+{
+    const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ12345667890";
+    if (size) {
+        --size;
+        for (size_t n = 0; n < size; n++) {
+            int key = random_uint32_range(0, (sizeof charset - 1));
+            str[n] = charset[key];
+        }
+        str[size] = '\0';
+    }
+    return str;
+}
+
+static int _test_register(int argc, char **argv)
+{
+    if (argc > 2) {
+        printf("usage: %s <contenttype>\n", argv[0]);
+        return -1;
+    }
+
+    while (1) {
+        int wait_seconds = random_uint32_range(35, 45);
+        xtimer_usleep(wait_seconds * 1000000);
+
+        char content_name[10];
+        rand_string(content_name, sizeof(content_name));
+
+        rd_register(content_name, strlen(content_name), 
+                    (const char *)argv[1], strlen(argv[1]),
+                    10);
+    }
+    
+    return 0;
+}
+
 static const shell_command_t shell_commands[] = {
     { "hr", "start HoPP root", _root },
     { "hp", "publish data with the given name", _publish },
     { "rd", "start RD", _rd },
     { "rdr", "register a resource: rdr <name> <contenttype>", _register },
     { "rdl", "lookup resources: rdl <contenttype>", _lookup },
+    { "test_lookup", "start doing regular lookups to a specified content type", _test_lookup },
+    { "test_register", "start doing regular lookups to a specified content type", _test_register },
     { NULL, NULL, NULL }
 };
 

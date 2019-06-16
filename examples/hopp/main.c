@@ -124,7 +124,7 @@ static int _test_lookup(int argc, char **argv)
     }
 
     while (1) {
-        int wait_seconds = random_uint32_range(5, 15);
+        int wait_seconds = random_uint32_range(50, 150);
         xtimer_usleep(wait_seconds * 1000000);
 
         rd_lookup(argv[1], strlen(argv[1]));

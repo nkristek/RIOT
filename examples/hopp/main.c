@@ -213,7 +213,7 @@ int main(void)
         return 1;
     }
 
-    hopp_pid = thread_create(hopp_stack, sizeof(hopp_stack), THREAD_PRIORITY_MAIN - 1,
+    hopp_pid = thread_create(hopp_stack, sizeof(hopp_stack), THREAD_PRIORITY_MAIN - 3,
                              THREAD_CREATE_STACKTEST, hopp, &ccnl_relay,
                              "hopp");
 
@@ -221,7 +221,7 @@ int main(void)
         return 1;
     }
 
-    rd_pid = thread_create(rd_stack, sizeof(rd_stack), THREAD_PRIORITY_MAIN - 1, 
+    rd_pid = thread_create(rd_stack, sizeof(rd_stack), THREAD_PRIORITY_MAIN - 2, 
                            THREAD_CREATE_STACKTEST, rd, NULL, 
                            "rd");
     if (rd_pid <= KERNEL_PID_UNDEF) {

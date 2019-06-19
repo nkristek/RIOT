@@ -93,6 +93,7 @@ int rd_callback_lookup_response_received(struct ccnl_relay_s *relay, struct ccnl
 
 void *rd(void* arg);
 
+int rd_register_entry(const rd_entry_t *entry);
 bool rd_register(const char *name, size_t name_len,
                  const char *contenttype, size_t contenttype_len,
                  uint64_t lifetime);

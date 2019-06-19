@@ -29,6 +29,8 @@
 extern "C" {
 #endif
 
+#define PKTCNT_CUSTOM  (0xfd01)
+
 #ifdef MODULE_PKTCNT_FAST
 // following counters are only for fast mode
 extern uint32_t retransmissions;
@@ -56,6 +58,7 @@ void pktcnt_timer_init(void);
 
 void pktcnt_log_rx(gnrc_pktsnip_t *pkt);
 void pktcnt_log_tx(gnrc_pktsnip_t *pkt);
+void pktcnt_log_custom(char *message);
 
 #ifdef __cplusplus
 }

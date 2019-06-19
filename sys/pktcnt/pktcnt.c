@@ -170,6 +170,9 @@ static void *pktcnt_thread(void *args)
             _log_tx(msg.content.ptr);
             gnrc_pktbuf_release(msg.content.ptr);
         }
+        else if (msg.type == PKTCNT_CUSTOM) {
+            puts(msg.content.ptr);
+        }
     }
     return NULL;
 }
@@ -744,6 +747,15 @@ void pktcnt_log_tx(gnrc_pktsnip_t *pkt)
 
         /* we divert the packet, so hold */
         gnrc_pktbuf_hold(pkt, 1);
+        msg_try_send(&msg, pktcnt_pid);
+    }
+}
+
+void pktcnt_log_custom(char *message)
+{
+    if (pktcnt_pid > KERNEL_PID_UNDEF) {
+        msg_t msg = { .type = PKTCNT_CUSTOM,
+                      .content.ptr = message };
         msg_try_send(&msg, pktcnt_pid);
     }
 }

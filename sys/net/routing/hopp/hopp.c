@@ -513,10 +513,6 @@ static int content_requested(struct ccnl_relay_s *relay, struct ccnl_pkt_s *p,
     (void) relay;
     (void) from;
 
-    int cb_res = hopp_callback_data_received(relay, p, from);
-    if (cb_res)
-        return cb_res; // handled
-
     char *content_name = ccnl_prefix_to_path(p->pfx);
     if (content_name == NULL)
     {
@@ -547,7 +543,11 @@ static int content_requested(struct ccnl_relay_s *relay, struct ccnl_pkt_s *p,
     }
 
     ccnl_free(content_name);
-    return 1;
+
+
+    hopp_callback_data_received(relay, p, from);
+
+    return 1; // handled
 }
 
 void *hopp(void *arg)

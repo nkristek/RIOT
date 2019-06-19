@@ -29,7 +29,7 @@ static msg_t _main_q[MAIN_QSZ];
 uint8_t hwaddr[GNRC_NETIF_L2ADDR_MAXLEN];
 char hwaddr_str[GNRC_NETIF_L2ADDR_MAXLEN * 3];
 
-#define TLSF_BUFFER     ((20 * 1024) / sizeof(uint32_t))
+#define TLSF_BUFFER     ((28 * 1024) / sizeof(uint32_t))
 static uint32_t _tlsf_heap[TLSF_BUFFER];
 
 static int _root(int argc, char **argv)
@@ -100,6 +100,21 @@ static int _register(int argc, char **argv)
     return 0;
 }
 
+static int _register_local(int argc, char **argv)
+{
+    if (argc != 3) {
+        printf("usage: %s <name> <contenttype>\n", argv[0]);
+        return -1;
+    }
+
+    rd_entry_t entry;
+    rd_entry_init(&entry, 
+                  (const char *)argv[1], strlen(argv[1]), 
+                  (const char *)argv[2], strlen(argv[2]),
+                  7200);
+    return rd_register_entry(&entry);
+}
+
 static int _lookup(int argc, char **argv)
 {
     if (argc > 2) {
@@ -112,23 +127,6 @@ static int _lookup(int argc, char **argv)
     }
 
     rd_lookup(argv[1], strlen(argv[1]));
-    
-    return 0;
-}
-
-static int _test_lookup(int argc, char **argv)
-{
-    if (argc > 2) {
-        printf("usage: %s <contenttype>\n", argv[0]);
-        return -1;
-    }
-
-    while (1) {
-        int wait_seconds = random_uint32_range(50, 150);
-        xtimer_usleep(wait_seconds * 1000000);
-
-        rd_lookup(argv[1], strlen(argv[1]));
-    }
     
     return 0;
 }
@@ -147,6 +145,23 @@ static char *rand_string(char *str, size_t size)
     return str;
 }
 
+static int _test_lookup(int argc, char **argv)
+{
+    if (argc > 2) {
+        printf("usage: %s <contenttype>\n", argv[0]);
+        return -1;
+    }
+
+    for (unsigned i = 0; i < 20; i++) {
+        int wait_seconds = random_uint32_range(15, 45);
+        xtimer_sleep(wait_seconds);
+
+        rd_lookup(argv[1], strlen(argv[1]));
+    }
+    
+    return 0;
+}
+
 static int _test_register(int argc, char **argv)
 {
     if (argc > 2) {
@@ -154,16 +169,16 @@ static int _test_register(int argc, char **argv)
         return -1;
     }
 
-    while (1) {
-        int wait_seconds = random_uint32_range(35, 45);
-        xtimer_usleep(wait_seconds * 1000000);
+    for (unsigned i = 0; i < 20; i++) {
+        int wait_seconds = random_uint32_range(15, 45);
+        xtimer_sleep(wait_seconds);
 
         char content_name[10];
         rand_string(content_name, sizeof(content_name));
 
         rd_register(content_name, strlen(content_name), 
                     (const char *)argv[1], strlen(argv[1]),
-                    10);
+                    100);
     }
     
     return 0;
@@ -174,6 +189,7 @@ static const shell_command_t shell_commands[] = {
     { "hp", "publish data with the given name", _publish },
     { "rd", "start RD", _rd },
     { "rdr", "register a resource: rdr <name> <contenttype>", _register },
+    { "rdr_local", "register a resource locally: rdr_local <name> <contenttype>", _register_local },
     { "rdl", "lookup resources: rdl <contenttype>", _lookup },
     { "test_lookup", "start doing regular lookups to a specified content type", _test_lookup },
     { "test_register", "start doing regular lookups to a specified content type", _test_register },
@@ -194,7 +210,7 @@ int main(void)
         return -1;
     }
 
-    uint16_t chan = 11;
+    uint16_t chan = 17;
     gnrc_netapi_set(hopp_netif->pid, NETOPT_CHANNEL, 0, &chan, sizeof(chan));
 
     uint16_t src_len = 8U;

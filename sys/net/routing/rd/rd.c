@@ -8,6 +8,7 @@
 #include "mutex.h"
 #include "xtimer.h"
 #include "fmt.h"
+#include "pktcnt.h"
 
 //#define ENABLE_DEBUG (1)
 
@@ -30,6 +31,11 @@ static mutex_t _rd_lookup_msg_pool_mutex = MUTEX_INIT;
 
 static rd_entry_t _rd_entry_pool[RD_MSG_POOL_SIZE];
 static mutex_t _rd_entry_pool_mutex = MUTEX_INIT;
+
+static char _rd_current_lookup_name[CCNL_MAX_PREFIX_SIZE];
+static mutex_t _rd_current_lookup_name_mutex = MUTEX_INIT;
+
+static char printf_buffer[128];
 
 static rd_lookup_msg_t *rd_lookup_msg_get_free_entry(void) 
 {
@@ -106,7 +112,7 @@ rd_callback_lookup_response_received(struct ccnl_relay_s *relay, struct ccnl_pkt
         return _lookup_response_received_func(relay, pkt, from);
     }
 
-    return 1;
+    return 0; // not handled
 }
 
 static CborError encode_entry(CborEncoder *encoder, const rd_entry_t *entry, uint64_t *next_index) 
@@ -453,7 +459,9 @@ static int interest_received(struct ccnl_relay_s *relay,
     &&  strncmp(interest_name, RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN) == 0) {
         // is lookup request
 
-        printf("RD_LOOKUP_REQUEST_RX;%.*s\n", interest_name_len, interest_name);
+        //printf("RD_LOOKUP_REQUEST_RX;%.*s\n", interest_name_len, interest_name);
+        snprintf(printf_buffer, sizeof(printf_buffer), "RD_LOOKUP_REQUEST_RX;%.*s", interest_name_len, interest_name);
+        pktcnt_log_custom(printf_buffer);
 
         char contenttype[CCNL_MAX_PREFIX_SIZE];
         memset(contenttype, 0, sizeof(contenttype));
@@ -498,7 +506,10 @@ static int interest_received(struct ccnl_relay_s *relay,
             return 0; // interest not handled
         }
 
-        printf("RD_LOOKUP_RESPONSE_TX;%.*s\n", interest_name_len, interest_name);
+        //printf("RD_LOOKUP_RESPONSE_TX;%.*s\n", interest_name_len, interest_name);
+        snprintf(printf_buffer, sizeof(printf_buffer), "RD_LOOKUP_RESPONSE_TX;%.*s", interest_name_len, interest_name);
+        pktcnt_log_custom(printf_buffer);
+
         ccnl_free(interest_name);
 
         struct ccnl_pkt_s *resp_pkt = ccnl_ndntlv_bytes2pkt(type, olddata, &data, &content_len);
@@ -511,7 +522,7 @@ static int interest_received(struct ccnl_relay_s *relay,
     return 0; // interest not handled
 }
 
-static int rd_register_entry(const rd_entry_t *entry) 
+int rd_register_entry(const rd_entry_t *entry) 
 {
 #if ENABLE_DEBUG
     printf("Registering entry:\n");
@@ -560,24 +571,41 @@ static int data_received_process_rd(struct ccnl_relay_s *relay, struct ccnl_pkt_
     size_t content_name_len = strlen(content_name);
 
     // check if lookup response
-    if (content_name_len > RD_LOOKUP_PREFIX_LEN 
+    if (content_name_len >= RD_LOOKUP_PREFIX_LEN 
     &&  strncmp(content_name, RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN) == 0) {
         // is lookup response
-        printf("RD_LOOKUP_RESPONSE_RX;%.*s\n", content_name_len, content_name);
+        mutex_lock(&_rd_current_lookup_name_mutex);
+        if (content_name_len != strlen(_rd_current_lookup_name)
+        ||  strncmp(content_name, _rd_current_lookup_name, content_name_len) != 0) {
+            // is not expected lookup response
+            mutex_unlock(&_rd_lookup_msg_pool_mutex);
+            return 0; // not handled
+        }
+        // reset current lookup name
+        memset(_rd_current_lookup_name, 0, sizeof(_rd_current_lookup_name));
+        mutex_unlock(&_rd_current_lookup_name_mutex);
+
+        //printf("RD_LOOKUP_RESPONSE_RX;%.*s\n", content_name_len, content_name);
+        snprintf(printf_buffer, sizeof(printf_buffer), "RD_LOOKUP_RESPONSE_RX;%.*s", content_name_len, content_name);
+        pktcnt_log_custom(printf_buffer);
+
         ccnl_free(content_name);
 
         if (rd_callback_lookup_response_received(relay, pkt, from))
             return 1; // handled
 
-        return 0; // not handled
     }
 
+    //printf("RD_REGISTER_REQUEST_RX;%.*s\n", content_name_len, content_name);
+
     // check if register request
-    if (content_name_len > RD_REGISTER_PREFIX_LEN 
+    if (content_name_len >= RD_REGISTER_PREFIX_LEN 
     &&  strncmp(content_name, RD_REGISTER_PREFIX, RD_REGISTER_PREFIX_LEN) == 0
     &&  dodag.rank == COMPAS_DODAG_ROOT_RANK) {
         // is register request
-        printf("RD_REGISTER_REQUEST_RX;%.*s\n", content_name_len, content_name);
+        //printf("RD_REGISTER_REQUEST_RX;%.*s\n", content_name_len, content_name);
+        snprintf(printf_buffer, sizeof(printf_buffer), "RD_REGISTER_REQUEST_RX;%.*s", content_name_len, content_name);
+        pktcnt_log_custom(printf_buffer);
 
         uint64_t next_index = 0;
         if (parse_content((const uint8_t *)pkt->content, pkt->contlen, rd_register_entry, &next_index))
@@ -588,6 +616,8 @@ static int data_received_process_rd(struct ccnl_relay_s *relay, struct ccnl_pkt_
     }
     return 0; // not handled
 }
+
+
 
 static int process_lookup_response(struct ccnl_relay_s *relay, struct ccnl_pkt_s *pkt, struct ccnl_face_s *from) 
 {
@@ -645,16 +675,18 @@ void *rd(void* arg)
     ccnl_set_local_producer(interest_received);
     hopp_callback_set_data_received(data_received_process_rd);
 
+    static char name[CCNL_MAX_PREFIX_SIZE + 1];
+    static uint8_t name_current_char, name_chars_available;
+    static struct ccnl_prefix_s *prefix_ccnl;
+    static rd_entry_t *entry;
+    static rd_lookup_msg_t *lookup_msg;
+    static uint8_t payload[CCNL_MAX_PACKET_SIZE];
+    static size_t payload_len = sizeof(payload);
+    //static unsigned char hash[SHA256_DIGEST_LENGTH];
+
     msg_t msg;
     while (1) {
         msg_receive(&msg);
-
-        char name[CCNL_MAX_PREFIX_SIZE + 1];
-        uint8_t name_current_char, name_chars_available;
-        struct ccnl_prefix_s *prefix_ccnl;
-        rd_entry_t *entry;
-        rd_lookup_msg_t *lookup_msg;
-
         switch (msg.type) {
             case RD_LOOKUP_REQUEST_TX:
                 // client sends lookup request
@@ -733,7 +765,17 @@ void *rd(void* arg)
 
                 name[32] = 0;
 
-                printf("RD_LOOKUP_REQUEST_TX;%s\n", name);
+                //printf("RD_LOOKUP_REQUEST_TX;%s\n", name);
+                snprintf(printf_buffer, sizeof(printf_buffer), "RD_LOOKUP_REQUEST_TX;%s", name);
+                pktcnt_log_custom(printf_buffer);
+
+                // set current lookup name
+                size_t name_len = strlen(name);
+                mutex_lock(&_rd_current_lookup_name_mutex);
+                size_t _rd_current_lookup_name_len = sizeof(_rd_current_lookup_name);
+                memset(_rd_current_lookup_name, 0, _rd_current_lookup_name_len);
+                memcpy(_rd_current_lookup_name, name, name_len);
+                mutex_unlock(&_rd_current_lookup_name_mutex);
 
                 prefix_ccnl = ccnl_URItoPrefix(name, CCNL_SUITE_NDNTLV, NULL, 0);
 
@@ -748,8 +790,7 @@ void *rd(void* arg)
 
                 entry = (rd_entry_t *)msg.content.ptr;
                 
-                uint8_t payload[CCNL_MAX_PACKET_SIZE];
-                size_t payload_len = sizeof(payload);
+                payload_len = sizeof(payload);
                 memset(payload, 0, sizeof(payload));
 
                 CborEncoder encoder;
@@ -769,8 +810,7 @@ void *rd(void* arg)
                 name_current_char = 0;
                 name_chars_available = sizeof(name) - 1;
 
-                unsigned char hash[SHA256_DIGEST_LENGTH];
-                sha256(payload, (size_t)payload_len, hash);
+                //sha256(payload, (size_t)payload_len, hash);
 
                 // add rd register prefix
                 if (name_chars_available < RD_REGISTER_PREFIX_LEN)
@@ -793,15 +833,26 @@ void *rd(void* arg)
                 name_chars_available--;
 
                 // add session id
-                if (!b58enc(&name[name_current_char], (size_t *) &name_chars_available, hash, 32))
-                {
-                    DEBUG("RD_REGISTER_REQUEST_TX: ERROR, b58enc failed.\n");
+                if (name_chars_available < 1) {
+                    DEBUG("RD_REGISTER_REQUEST_TX: prefix will be too long\n");
                     break;
                 }
+                rand_string(&name[name_current_char], name_chars_available);
+
+                /* 
+                if (!b58enc(&name[name_current_char], (size_t *) &name_chars_available, hash, SHA256_DIGEST_LENGTH))
+                {
+                    DEBUG("RD_REGISTER_REQUEST_TX: ERROR, b58enc failed.\n");
+                    printf("b58enc failed, chars available: %u, \n", name_chars_available);
+                    break;
+                }
+                */
 
                 name[32] = 0;
 
-                printf("RD_REGISTER_REQUEST_TX;%s\n", name);
+                //printf("RD_REGISTER_REQUEST_TX;%s\n", name);
+                snprintf(printf_buffer, sizeof(printf_buffer), "RD_REGISTER_REQUEST_TX;%s", name);
+                pktcnt_log_custom(printf_buffer);
 
                 if (!hopp_publish_content(name, strlen(name), (unsigned char *) payload, payload_len))
                     DEBUG("RD_REGISTER_REQUEST_TX: publishing content failed.\n");

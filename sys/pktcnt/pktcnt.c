@@ -22,7 +22,7 @@
 #define NETREG_TYPE     (GNRC_NETTYPE_IPV6)
 #endif
 
-#define PKTCNT_MSG_QUEUE_SIZE   (4)
+#define PKTCNT_MSG_QUEUE_SIZE   (32)
 #ifndef PKTCNT_PRIO
 #define PKTCNT_PRIO             (THREAD_PRIORITY_MAIN - 1)
 #endif
@@ -128,8 +128,6 @@ static char src[IPV6_ADDR_MAX_STR_LEN], dst[IPV6_ADDR_MAX_STR_LEN];
 
 const char *keyword = "PKT";
 const char *typestr[] = { "TIMER", "STARTUP", "PKT_TX", "PKT_RX", };
-
-
 
 
 static void log_event(int type)

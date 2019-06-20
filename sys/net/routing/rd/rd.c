@@ -36,6 +36,7 @@ static char _rd_current_lookup_name[CCNL_MAX_PREFIX_SIZE];
 static mutex_t _rd_current_lookup_name_mutex = MUTEX_INIT;
 
 static char printf_buffer[128];
+static char printf_buffer2[128];
 
 static rd_lookup_msg_t *rd_lookup_msg_get_free_entry(void) 
 {
@@ -320,6 +321,10 @@ static int parse_content(const uint8_t *content, size_t content_len,
 
 static int parse_contenttype_of_prefix(const char *prefix, size_t prefix_len, char *contenttype, size_t contenttype_len)
 {
+    if (prefix_len < RD_LOOKUP_PREFIX_LEN + 1) {
+        return -1;
+    }
+
     size_t output_len = 0;
     const unsigned lookup_prefix_offset = RD_LOOKUP_PREFIX_LEN + 1; // length of rd-lookup prefix and following /
     for (unsigned i = 0; ; i++) {
@@ -339,6 +344,9 @@ static int parse_contenttype_of_prefix(const char *prefix, size_t prefix_len, ch
 
 static int parse_chunk_of_prefix(const char *prefix, size_t prefix_len, uint64_t *chunk)
 {
+    if (prefix_len < RD_LOOKUP_PREFIX_LEN + 1) {
+        return -1;
+    }
     char buf[4];
     memset(buf, 0, sizeof(buf));
 
@@ -459,7 +467,6 @@ static int interest_received(struct ccnl_relay_s *relay,
     &&  strncmp(interest_name, RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN) == 0) {
         // is lookup request
 
-        //printf("RD_LOOKUP_REQUEST_RX;%.*s\n", interest_name_len, interest_name);
         snprintf(printf_buffer, sizeof(printf_buffer), "RD_LOOKUP_REQUEST_RX;%.*s", interest_name_len, interest_name);
         pktcnt_log_custom(printf_buffer);
 
@@ -483,7 +490,7 @@ static int interest_received(struct ccnl_relay_s *relay,
         memset(payload, 0, sizeof(payload));
         int payload_len = rd_lookup_registered_content(contenttype, contenttype_len, chunk, payload, sizeof(payload));
         if (payload_len <= 0) {
-            DEBUG("RD_LOOKUP_REQUEST_RX: failed to build response message\n");
+            DEBUG("failed to build response message\n");
             return 0; // interest not handled
         }
 
@@ -492,7 +499,7 @@ static int interest_received(struct ccnl_relay_s *relay,
         int offs = CCNL_MAX_PACKET_SIZE;
         int content_len = ccnl_ndntlv_prependContent(pkt->pfx, (unsigned char *) payload, payload_len, NULL, NULL, &offs, _out);
         if (content_len < 0) {
-            DEBUG("RD_LOOKUP_RESPONSE_TX: Error, content length: %i\n", content_len);
+            DEBUG("Error, content length: %i\n", content_len);
             return 0; // interest not handled
         }
 
@@ -502,19 +509,18 @@ static int interest_received(struct ccnl_relay_s *relay,
         unsigned type;
         if (ccnl_ndntlv_dehead(&data, &content_len, (int*) &type, &len) ||
             type != NDN_TLV_Data) {
-            DEBUG("RD_LOOKUP_RESPONSE_TX: ccnl_ndntlv_dehead\n");
+            DEBUG("ccnl_ndntlv_dehead\n");
             return 0; // interest not handled
         }
 
-        //printf("RD_LOOKUP_RESPONSE_TX;%.*s\n", interest_name_len, interest_name);
-        snprintf(printf_buffer, sizeof(printf_buffer), "RD_LOOKUP_RESPONSE_TX;%.*s", interest_name_len, interest_name);
-        pktcnt_log_custom(printf_buffer);
+        snprintf(printf_buffer2, sizeof(printf_buffer2), "RD_LOOKUP_RESPONSE_TX;%.*s", interest_name_len, interest_name);
+        pktcnt_log_custom(printf_buffer2);
 
         ccnl_free(interest_name);
 
         struct ccnl_pkt_s *resp_pkt = ccnl_ndntlv_bytes2pkt(type, olddata, &data, &content_len);
         if (ccnl_send_pkt(relay, from, resp_pkt))
-            DEBUG("RD_LOOKUP_RESPONSE_TX: send response failed\n");
+            DEBUG("send response failed\n");
         
         return 1; // interest handled
     }
@@ -585,7 +591,6 @@ static int data_received_process_rd(struct ccnl_relay_s *relay, struct ccnl_pkt_
         memset(_rd_current_lookup_name, 0, sizeof(_rd_current_lookup_name));
         mutex_unlock(&_rd_current_lookup_name_mutex);
 
-        //printf("RD_LOOKUP_RESPONSE_RX;%.*s\n", content_name_len, content_name);
         snprintf(printf_buffer, sizeof(printf_buffer), "RD_LOOKUP_RESPONSE_RX;%.*s", content_name_len, content_name);
         pktcnt_log_custom(printf_buffer);
 
@@ -596,20 +601,17 @@ static int data_received_process_rd(struct ccnl_relay_s *relay, struct ccnl_pkt_
 
     }
 
-    //printf("RD_REGISTER_REQUEST_RX;%.*s\n", content_name_len, content_name);
-
     // check if register request
     if (content_name_len >= RD_REGISTER_PREFIX_LEN 
     &&  strncmp(content_name, RD_REGISTER_PREFIX, RD_REGISTER_PREFIX_LEN) == 0
     &&  dodag.rank == COMPAS_DODAG_ROOT_RANK) {
         // is register request
-        //printf("RD_REGISTER_REQUEST_RX;%.*s\n", content_name_len, content_name);
         snprintf(printf_buffer, sizeof(printf_buffer), "RD_REGISTER_REQUEST_RX;%.*s", content_name_len, content_name);
         pktcnt_log_custom(printf_buffer);
 
         uint64_t next_index = 0;
         if (parse_content((const uint8_t *)pkt->content, pkt->contlen, rd_register_entry, &next_index))
-            DEBUG("RD_REGISTER_REQUEST_RX: parsing failed\n");
+            DEBUG("parsing failed\n");
 
         ccnl_free(content_name);
         return 1; // handled
@@ -630,7 +632,7 @@ static int process_lookup_response(struct ccnl_relay_s *relay, struct ccnl_pkt_s
 #else
     if (parse_content((const uint8_t *)pkt->content, pkt->contlen, NULL, &next_index)) {
 #endif
-        DEBUG("RD_LOOKUP_RESPONSE_RX: parsing lookup response failed\n");
+        DEBUG("parsing lookup response failed\n");
         return 0; // not handled
     }
 
@@ -675,7 +677,7 @@ void *rd(void* arg)
     ccnl_set_local_producer(interest_received);
     hopp_callback_set_data_received(data_received_process_rd);
 
-    static char name[CCNL_MAX_PREFIX_SIZE + 1];
+    static char name[CCNL_MAX_PREFIX_SIZE];
     static uint8_t name_current_char, name_chars_available;
     static struct ccnl_prefix_s *prefix_ccnl;
     static rd_entry_t *entry;
@@ -690,36 +692,40 @@ void *rd(void* arg)
         switch (msg.type) {
             case RD_LOOKUP_REQUEST_TX:
                 // client sends lookup request
+                DEBUG("start lookup\n");
 
                 lookup_msg = (rd_lookup_msg_t *)msg.content.ptr;
 
                 memset(name, 0, sizeof(name));
                 name_current_char = 0;
                 name_chars_available = sizeof(name) - 1;
-                
+
+                DEBUG("add rd lookup prefix\n");
                 // add rd lookup prefix
                 if (name_chars_available < RD_LOOKUP_PREFIX_LEN) {
-                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    DEBUG("prefix will be too long\n");
                     break;
                 }
                 strncpy(&name[name_current_char], RD_LOOKUP_PREFIX, RD_LOOKUP_PREFIX_LEN);
                 name_current_char += RD_LOOKUP_PREFIX_LEN;
                 name_chars_available -= RD_LOOKUP_PREFIX_LEN;
 
+                DEBUG("add slash\n");
                 // add slash
                 if (name_chars_available < 1) {
-                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    DEBUG("prefix will be too long\n");
                     break;
                 }
                 name[name_current_char] = '/';
                 name_current_char++;
                 name_chars_available--;
 
+                DEBUG("add contenttype\n");
                 // add contenttype
                 if (lookup_msg->contenttype != NULL) {
                     if (name_chars_available < lookup_msg->contenttype_len)
                     {
-                        DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                        DEBUG("prefix will be too long\n");
                         break;
                     }
                     strncpy(&name[name_current_char], lookup_msg->contenttype, lookup_msg->contenttype_len);
@@ -727,18 +733,20 @@ void *rd(void* arg)
                     name_chars_available -= lookup_msg->contenttype_len;
                 }
 
+                DEBUG("add slash\n");
                 // add slash
                 if (name_chars_available < 1) {
-                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    DEBUG("prefix will be too long\n");
                     break;
                 }
                 name[name_current_char] = '/';
                 name_current_char++;
                 name_chars_available--;
 
+                DEBUG("add chunk_number\n");
                 // add chunk_number
                 if (name_chars_available < 8) {
-                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    DEBUG("prefix will be too long\n");
                     break;
                 }
                 size_t result = fmt_u64_dec(&name[name_current_char], lookup_msg->chunk);
@@ -747,41 +755,41 @@ void *rd(void* arg)
 
                 rd_lookup_msg_free(lookup_msg);
                 
+                DEBUG("add slash\n");
                 // add slash
                 if (name_chars_available < 1) {
-                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    DEBUG("prefix will be too long\n");
                     break;
                 }
                 name[name_current_char] = '/';
                 name_current_char++;
                 name_chars_available--;
 
+                DEBUG("add session id\n");
                 // add session id
                 if (name_chars_available < 1) {
-                    DEBUG("RD_LOOKUP_REQUEST_TX: prefix will be too long\n");
+                    DEBUG("prefix will be too long\n");
                     break;
                 }
                 rand_string(&name[name_current_char], name_chars_available);
 
                 name[32] = 0;
 
-                //printf("RD_LOOKUP_REQUEST_TX;%s\n", name);
                 snprintf(printf_buffer, sizeof(printf_buffer), "RD_LOOKUP_REQUEST_TX;%s", name);
                 pktcnt_log_custom(printf_buffer);
 
+                DEBUG("set current lookup name\n");
                 // set current lookup name
-                size_t name_len = strlen(name);
                 mutex_lock(&_rd_current_lookup_name_mutex);
-                size_t _rd_current_lookup_name_len = sizeof(_rd_current_lookup_name);
-                memset(_rd_current_lookup_name, 0, _rd_current_lookup_name_len);
-                memcpy(_rd_current_lookup_name, name, name_len);
+                memset(_rd_current_lookup_name, 0, sizeof(_rd_current_lookup_name));
+                strncpy(_rd_current_lookup_name, name, strlen(name));
                 mutex_unlock(&_rd_current_lookup_name_mutex);
 
                 prefix_ccnl = ccnl_URItoPrefix(name, CCNL_SUITE_NDNTLV, NULL, 0);
 
-                memset(_lookup_int_buf, 0, HOPP_INTEREST_BUFSIZE);
+                memset(_lookup_int_buf, 0, sizeof(_lookup_int_buf));
                 if (ccnl_send_interest(prefix_ccnl, _lookup_int_buf, sizeof(_lookup_int_buf), NULL, NULL) != 0)
-                    DEBUG("RD_LOOKUP_REQUEST_TX: sending interest failed\n");
+                    DEBUG("sending interest failed\n");
                 
                 ccnl_prefix_free(prefix_ccnl);
                 break;
@@ -839,18 +847,8 @@ void *rd(void* arg)
                 }
                 rand_string(&name[name_current_char], name_chars_available);
 
-                /* 
-                if (!b58enc(&name[name_current_char], (size_t *) &name_chars_available, hash, SHA256_DIGEST_LENGTH))
-                {
-                    DEBUG("RD_REGISTER_REQUEST_TX: ERROR, b58enc failed.\n");
-                    printf("b58enc failed, chars available: %u, \n", name_chars_available);
-                    break;
-                }
-                */
-
                 name[32] = 0;
 
-                //printf("RD_REGISTER_REQUEST_TX;%s\n", name);
                 snprintf(printf_buffer, sizeof(printf_buffer), "RD_REGISTER_REQUEST_TX;%s", name);
                 pktcnt_log_custom(printf_buffer);
 

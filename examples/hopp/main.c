@@ -169,8 +169,8 @@ static int _test_register(int argc, char **argv)
         return -1;
     }
 
-    for (unsigned i = 0; i < 20; i++) {
-        int wait_seconds = random_uint32_range(15, 45);
+    for (unsigned i = 0; i < 60; i++) {
+        int wait_seconds = random_uint32_range(45, 75);
         xtimer_sleep(wait_seconds);
 
         char content_name[10];
@@ -178,7 +178,7 @@ static int _test_register(int argc, char **argv)
 
         rd_register(content_name, strlen(content_name), 
                     (const char *)argv[1], strlen(argv[1]),
-                    100);
+                    60);
     }
     
     return 0;

@@ -29,7 +29,7 @@ static msg_t _main_q[MAIN_QSZ];
 uint8_t hwaddr[GNRC_NETIF_L2ADDR_MAXLEN];
 char hwaddr_str[GNRC_NETIF_L2ADDR_MAXLEN * 3];
 
-#define TLSF_BUFFER     ((28 * 1024) / sizeof(uint32_t))
+#define TLSF_BUFFER     ((24 * 1024) / sizeof(uint32_t))
 static uint32_t _tlsf_heap[TLSF_BUFFER];
 
 static int _root(int argc, char **argv)

@@ -319,7 +319,9 @@ void hopp_request(struct ccnl_relay_s *relay, compas_nam_cache_entry_t *nce)
     if (ccnl_send_interest(prefix, int_buf, HOPP_INTEREST_BUFSIZE, NULL, to) != 0) {
         puts("hopp: failed to send Interest");
     }
-    ccnl_prefix_free(prefix);
+    if (prefix) {
+        ccnl_prefix_free(prefix);
+    }
 }
 
 static void hopp_handle_nam(struct ccnl_relay_s *relay, compas_dodag_t *dodag,
